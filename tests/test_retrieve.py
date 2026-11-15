@@ -125,6 +125,21 @@ def test_tiny_budgets_cut_to_fit_and_one_letter_names_seed():
         previous = context
 
 
+def test_a_line_that_overflows_the_budget_ends_the_context(monkeypatch):
+    monkeypatch.setattr("selfgraph.retrieval.count_tokens", lambda text: max(1, len(text) // 4))
+    g = fresh_graph("overflow")
+    run(g.entities.create("Ann", "Person", id="person:ann"))
+    run(g.entities.create("Bob", "Person", id="person:bob"))
+    run(g.relations.create("person:ann", "KNOWS", "person:bob", properties={"note": "met at the old harbour"}))
+    full = run(g.retrieve("Ann")).context
+    previous = ""
+    for budget in range(1, 16):
+        context = run(g.retrieve("Ann", budget_tokens=budget)).context
+        assert context and len(context) // 4 <= budget
+        assert full.startswith(context) and context.startswith(previous)
+        previous = context
+
+
 @pytest.mark.skipif(not KUZU, reason="a bulk insert; the paged scan is the same on every backend")
 def test_retrieve_scores_every_entity_past_five_thousand():
     g = fresh_graph("bulk")

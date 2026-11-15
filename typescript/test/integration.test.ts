@@ -867,6 +867,23 @@ describe("property values", () => {
     expect((await h.retrieve("A")).seeds.map((s) => s.id)).toEqual(["person:a"]);
   });
 
+  it("ends the context at the first line that overflows the budget", async () => {
+    const g = open();
+    await g.entities.create("Ann", "Person", { id: "person:ann" });
+    await g.entities.create("Bob", "Person", { id: "person:bob" });
+    await g.relations.create("person:ann", "KNOWS", "person:bob", { properties: { note: "met at the old harbour" } });
+    const { countTokens } = await loadTokenizer();
+    const full = (await g.retrieve("Ann")).context;
+    let previous = "";
+    for (let budget = 1; budget < 16; budget++) {
+      const { context } = await g.retrieve("Ann", { budget_tokens: budget });
+      expect(context).not.toBe("");
+      expect(countTokens(context)).toBeLessThanOrEqual(budget);
+      expect(full.startsWith(context) && context.startsWith(previous)).toBe(true);
+      previous = context;
+    }
+  });
+
   it("rejects empty updates, bad list filters, and missing endpoints, and clears named fields", async () => {
     const g = open();
     await g.insert.facts({
