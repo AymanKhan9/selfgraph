@@ -144,6 +144,8 @@ entity's changed properties read as they are now.
 3. **Assemble.** Passages, relations, preferences, decisions, and entities are
    written nearest or highest-ranked first. Passages take at most 60% of the
    budget, and at most six of them. The context never exceeds `budget_tokens`.
+   The first relation, preference, decision, or entity line that does not fit
+   ends the context, so a farther line never takes the place of a nearer one.
    When even the first line does not fit, it is cut to the longest prefix that
    fits. The budget trims only the context. The subgraph is bounded by
    `max_nodes`. Among relations equally close to the query, certified ones come

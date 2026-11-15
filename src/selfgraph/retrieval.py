@@ -833,8 +833,9 @@ def _assemble(
     @param decisions (list[DecisionTrace]): the collected decision traces.
     @param names (dict[str, str]): display name for every entity id the context mentions.
     @param dist (dict[str, int]): each entity's closeness rank to the query, lower first (hops, or PageRank rank).
-    @param budget_tokens (int): the maximum estimated tokens to emit; when even the first line does not fit, that
-        line is cut to the budget, so a non-empty subgraph never yields an empty context.
+    @param budget_tokens (int): the maximum estimated tokens to emit; the first line that does not fit ends the
+        context, so a farther line never takes the place of a nearer one, and when even the first line does not fit,
+        that line is cut to the budget, so a non-empty subgraph never yields an empty context.
     @param hubs (Collection[str]): hub entity ids; a relation line through one is marked "(via hub)".
     @return (str): the assembled context text. Certified relations come first among equally close ones and are
         marked "[certified]".
@@ -842,13 +843,17 @@ def _assemble(
     lines: list[str] = []
     first: list[str] = []
     used = 0
+    full = False
 
     def add(line: str, cap: int) -> bool:
-        nonlocal used
+        nonlocal used, full
         if not first:
             first.append(line)
+        if full:
+            return False
         cost = count_tokens(line)
         if used + cost > cap:
+            full = cap >= budget_tokens
             return False
         lines.append(line)
         used += cost
