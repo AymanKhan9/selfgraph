@@ -151,7 +151,7 @@ def _validate_entity_identity(eid: str, type: str, name: str) -> None:
         raise ValidationError(f"entity type {type!r} cannot contain ':', which separates an entity id's type and name")
     if _has_control(name) or _has_control(type):
         raise ValidationError("entity type and name cannot contain control or surrogate characters")
-    if not all(ch.isalnum() or ch in " _-." for ch in type):
+    if not all(ch.isalnum() or ch in " _-." or _ids._is_mark(ch) for ch in type):
         raise ValidationError(f"entity type {type!r} can only contain letters, digits, spaces, '_', '-', and '.'")
     if _has_control(eid):
         raise ValidationError("entity id cannot contain control or surrogate characters")
@@ -506,6 +506,17 @@ def relation_evidence(
 
 def _clean_text(value: Any) -> Any:
     return _ids.normalize_text(value).strip() if isinstance(value, str) else value
+
+
+def entity_type_key(etype: str, canonical: Callable[[str], str] | None = None) -> str:
+    """The key entity type filters compare on: the cleaned type, through canonical when given, case-folded.
+
+    @param etype (str): the entity type.
+    @param canonical (Callable[[str], str] | None): maps a type to its schema type name, or None for no schema.
+    @return (str): the comparison key.
+    """
+    etype = _clean_text(etype)
+    return (canonical(etype) if canonical is not None else etype).casefold()
 
 
 def unique_by_id(items: Iterable[Any]) -> list[Any]:
@@ -882,7 +893,8 @@ async def validate_facts(
     for dec in facts.decisions:
         _validate_own_id("decision", dec.id)
         _require_datetime("decision event_time", dec.event_time)
-        _require_choice("decision status", dec.status, _STATUSES)
+        if dec.status is not None:
+            _require_choice("decision status", dec.status, _STATUSES)
         _require_text("decision title", dec.title)
         _require_optional_text("decision summary", dec.summary)
         _require_optional_text("decision rationale", dec.rationale)
@@ -915,16 +927,20 @@ async def upsert_entities(
     *,
     evidence: list[Evidence],
     created_at: datetime,
+    schema_types: Collection[str] = (),
 ) -> list[Entity]:
     """Insert-semantics upsert of many entities: keep stored names, record new surface forms as aliases, merge the rest.
 
     Entities are read and written in batches; a repeated id merges into the earlier input, as sequential upserts would.
+    A stored entity keeps its type when an input spells it with other case or spacing, unless the input's type is a
+    schema type name.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
     @param ents (list[EntityInput]): entities to upsert, in order.
     @param evidence (list[Evidence]): evidence recorded for every entity.
     @param created_at (datetime): timestamp for created and updated fields.
+    @param schema_types (Collection[str]): the schema's entity type names, which a stored entity's type may adopt.
     @return (list[Entity]): each input's stored entity, in input order.
     """
     keyed = []
@@ -962,6 +978,8 @@ async def upsert_entities(
                 updated_at=created_at,
             )
         else:
+            if etype not in schema_types:
+                etype = prev.type
             merged_aliases = _alias_list(prev.name, [*prev.aliases, *ent.aliases, ename])
             merged_external = {**prev.external_ids, **ent.external_ids}
             merged_properties = _merge_props(prev.properties, ent.properties)
@@ -1198,10 +1216,7 @@ async def list_entities(
     if type is None:
         return [decode_entity(r) for r in await fetch(skip=skip, limit=limit)]
 
-    def key(etype: str) -> str:
-        etype = _clean_text(etype)
-        return (canonical(etype) if canonical is not None else etype).casefold()
-
+    key = partial(entity_type_key, canonical=canonical)
     wanted = key(type)
     found: list[dict] = []
     read = 0
@@ -1689,6 +1704,23 @@ def effective_time(version: Relation | Preference | DecisionTrace) -> datetime:
     return aware(version.event_time or version.created_at)
 
 
+def _restated_event_time(named: datetime | None, *, stored: datetime | None, keep_stored: bool) -> datetime | None:
+    """Pick the event_time for an upsert of an existing version.
+
+    A write that does not name a time keeps the stored time when the version is still current, matching
+    relations.update. A reassertion of a retired version with no named time leaves event_time unset so the
+    effective time is the write's creation time.
+
+    @param named (datetime | None): the time named on this write, after applying the insert default.
+    @param stored (datetime | None): the current version's event_time.
+    @param keep_stored (bool): True when the stored version is current and should keep its time.
+    @return (datetime | None): the event_time to store.
+    """
+    if named is not None:
+        return named
+    return stored if keep_stored else None
+
+
 def _rank(rel: Relation) -> tuple[datetime, int, datetime]:
     """Order a relation among others at one endpoint: by effective time, then revision, then creation time.
 
@@ -1718,11 +1750,14 @@ class Contradictions:
         self._mode = mode
         self._groups: dict[tuple[str, str, str], dict[str, tuple]] = {}
         self._past: dict[tuple[str, str, str], dict[str, tuple]] = {}
+        self._ended: dict[str, tuple[str, datetime]] = {}
         self._where: dict[str, dict[tuple[str, str, str], None]] = {}
         self._order: dict[str, int] = {}
         self._dirty: dict[tuple[str, str, str], int] = {}
         self._certified = {rel.id for rel in current if rel.certified_at is not None}
         for rel in history:
+            if rel.invalidated_by is not None and rel.invalidated_at is not None:
+                self._ended[rel.id] = (rel.invalidated_by, rel.invalidated_at)
             for key, _ in self._slots(rel.type, rel.from_entity, rel.to_entity):
                 self._past.setdefault(key, {})[rel.id] = _rank(rel)
         for rel in current:
@@ -1748,6 +1783,11 @@ class Contradictions:
         self._groups.setdefault(key, {})[rid] = rank
         self._past.get(key, {}).pop(rid, None)
         self._where.setdefault(rid, {})[key] = None
+
+    @staticmethod
+    def _newer(facts: dict[str, tuple], rid: str) -> list[tuple[tuple, str]]:
+        mine = (facts[rid], rid)
+        return sorted((facts[o], o) for o in facts if (facts[o], o) > mine)
 
     def _drop(self, rid: str) -> None:
         for key in self._where.pop(rid, {}):
@@ -1811,20 +1851,27 @@ class Contradictions:
         displaced it in time order, the max_count-th newer fact at the endpoint with retired history counted, at
         that fact's effective time. Each retired relation gets one warning:
         "contradiction_out_of_order" when it was written by this write after that fact was current, else
-        "relation_superseded".
+        "relation_superseded". A relation retired by an earlier write whose invalidating fact is no longer the
+        max_count-th newer one, because this write added a fact in between, is returned with its corrected
+        invalidation and no warning; the caller writes that as a new revision of it.
 
         @return (tuple[dict[str, tuple[str, datetime]], list[InsertWarning]]): each retired relation id with the
             id that invalidated it and when, and the warnings.
         """
         retired: dict[str, tuple[str, datetime]] = {}
-        warnings: list[InsertWarning] = []
+        why: dict[str, tuple[tuple[str, str, str], int, str]] = {}
+        slots: list[InsertWarning | str] = []
         for key, limit in self._dirty.items():
             group = self._groups.get(key, {})
+            facts = {**self._past.get(key, {}), **group}
             ranked = sorted(group, key=lambda o: (group[o], o), reverse=True)
             canonical, side, endpoint = key
-            for old in ranked[limit:]:
+            for old in ranked:
+                newer = self._newer(facts, old)
+                if len(newer) < limit:
+                    continue
                 if old in self._certified:
-                    warnings.append(
+                    slots.append(
                         InsertWarning(
                             code="certified_kept",
                             message=f"relation {old} is certified, so it stays current beside newer {canonical} "
@@ -1832,29 +1879,44 @@ class Contradictions:
                         )
                     )
                     continue
-                facts = {**self._past.get(key, {}), **group}
-                mine = (facts[old], old)
-                newer = sorted((facts[o], o) for o in facts if (facts[o], o) > mine)
                 (at, _, _), by = newer[limit - 1]
-                retired[old] = (by, at)
-                self._drop(old)
-                if self._order.get(by, 0) < self._order.get(old, 0):
-                    keeper = ranked[limit - 1]
-                    warnings.append(
-                        InsertWarning(
-                            code="contradiction_out_of_order",
-                            message=f"relation {old} is older than current {canonical} relation {keeper} "
-                            f"at {side} entity {endpoint}, so {keeper} stays current",
-                        )
+                if old not in retired:
+                    slots.append(old)
+                if old not in retired or at < retired[old][1]:
+                    retired[old] = (by, at)
+                    why[old] = (key, limit, ranked[limit - 1] if len(ranked) >= limit else by)
+            for rid in self._past.get(key, {}):
+                newer = self._newer(facts, rid)
+                ended = retired.get(rid, self._ended.get(rid))
+                if ended is None or len(newer) < limit:
+                    continue
+                (at, _, _), by = newer[limit - 1]
+                if (by, at) != ended and (ended[0] in facts or at < ended[1]):
+                    retired[rid] = self._ended[rid] = (by, at)
+        warnings: list[InsertWarning] = []
+        for slot in slots:
+            if not isinstance(slot, str):
+                warnings.append(slot)
+                continue
+            by = retired[slot][0]
+            (canonical, side, endpoint), limit, keeper = why[slot]
+            self._drop(slot)
+            if self._order.get(by, 0) < self._order.get(slot, 0):
+                warnings.append(
+                    InsertWarning(
+                        code="contradiction_out_of_order",
+                        message=f"relation {slot} is older than current {canonical} relation {keeper} "
+                        f"at {side} entity {endpoint}, so {keeper} stays current",
                     )
-                else:
-                    warnings.append(
-                        InsertWarning(
-                            code="relation_superseded",
-                            message=f"relation {old} was superseded by {by}, a newer {canonical} relation "
-                            f"at {side} entity {endpoint} (max_count {limit})",
-                        )
+                )
+            else:
+                warnings.append(
+                    InsertWarning(
+                        code="relation_superseded",
+                        message=f"relation {slot} was superseded by {by}, a newer {canonical} relation "
+                        f"at {side} entity {endpoint} (max_count {limit})",
                     )
+                )
         self._dirty.clear()
         return retired, warnings
 
@@ -1887,7 +1949,10 @@ async def require_max_count(
 def _retired(edge: dict, by: str, at: datetime, known: datetime) -> dict:
     """Mark a relation version as no longer current because a newer relation superseded it.
 
-    @param edge (dict): the current edge row.
+    A version that was already retired takes a new revision instead, copying its content, so a known_at read from
+    before this write still sees the earlier retirement.
+
+    @param edge (dict): the edge row, current or already retired.
     @param by (str): the id of the relation that superseded it.
     @param at (datetime): the superseding relation's effective time.
     @param known (datetime): when the retirement is written, for reads with known_at.
@@ -1900,6 +1965,8 @@ def _retired(edge: dict, by: str, at: datetime, known: datetime) -> dict:
         "invalidated_by": by,
         "invalidated_known_at": to_iso(known),
     }
+    if not edge["props"]["is_current"]:
+        props.update(revision=int(edge["props"]["revision"]) + 1, created_at=to_iso(known))
     return {**edge, "props": props}
 
 
@@ -1917,8 +1984,8 @@ async def _contradiction_check(
     @param contradiction (str): "off", "warn", "supersede", or "strict".
     @param caps (Mapping[str, RelationCap] | None): the max_count limits, or None without a schema.
     @param ends (Iterable[tuple[str, str, str]]): (normalized type, source id, destination id) of each write.
-    @return (tuple[Contradictions | None, dict[str, dict]]): the tracker, or None when off, and each current
-        relation's edge row at the constrained endpoints by id, in read order.
+    @return (tuple[Contradictions | None, dict[str, dict]]): the tracker, or None when off, and each relation's
+        newest edge row at the constrained endpoints by id, current or retired, in read order.
     """
     if contradiction == "off" or not caps:
         return None, {}
@@ -1936,11 +2003,11 @@ async def _contradiction_check(
                 fetch = partial(runner.match_edges, ns, from_label=L_ENTITY, to_label=L_ENTITY, type=stored)
                 for edge in await _paged(partial(fetch, **anchor), page=_BATCH):
                     _keep_newest(found, edge)
-    existing = {rid: e for rid, e in found.items() if e["props"]["is_current"]}
+    current = [_relation_of(e) for e in found.values() if e["props"]["is_current"]]
     history = [
         _relation_of(e) for e in found.values() if not e["props"]["is_current"] and e["props"].get("invalidated_at")
     ]
-    return Contradictions(caps, contradiction, [_relation_of(e) for e in existing.values()], history), existing
+    return Contradictions(caps, contradiction, current, history), found
 
 
 async def rival_relations(
@@ -2068,11 +2135,11 @@ async def upsert_relations(
     retires: dict[tuple[str, int], dict] = {}
     out: list[tuple[str, int, Relation]] = []
     for rid, rtype, rel, _ in keyed:
-        event_time = rel.event_time or default_event_time
-        effective = aware(event_time or created_at)
+        named = rel.event_time if rel.event_time is not None else default_event_time
         edge = current.get(rid)
         write = True
         if edge is None:
+            event_time = named
             props = encode_relation_props(
                 ns=ns,
                 id=rid,
@@ -2089,6 +2156,8 @@ async def upsert_relations(
                 rid, (edge["from_id"], edge["type"], edge["to_id"]), (rel.from_entity, rtype, rel.to_entity)
             )
             prev = _relation_of(edge)
+            event_time = _restated_event_time(named, stored=prev.event_time, keep_stored=prev.is_current)
+            effective = aware(event_time or created_at)
             sources = prev.source_count + gained.pop(rid, 0)
             merged_properties = _merge_props(prev.properties, rel.properties)
             reassert = not prev.is_current and (prev.invalidated_at is None or effective >= prev.invalidated_at)
@@ -2773,7 +2842,7 @@ async def upsert_preference(
     _validate_strength(pref.strength)
     _validate_own_id("preference", pref.id)
     pid = pref.id or _ids.preference_id(pref.subject_entity, pref.stance, pref.key, pref.value_entity)
-    event_time = pref.event_time or default_event_time
+    named = pref.event_time if pref.event_time is not None else default_event_time
     await _require_preference_refs(runner, ns, pref.value_entity, pref.about_entity)
     profile_id = await _ensure_profile(runner, ns, pref.subject_entity, created_at)
 
@@ -2789,6 +2858,12 @@ async def upsert_preference(
             f"preference {pid!r} already exists with different subject/stance/key/value; "
             "these identify the preference and are immutable; create a new preference to change them"
         )
+    if current is None:
+        event_time, strength, about_entity = named, pref.strength, pref.about_entity
+    else:
+        event_time = _restated_event_time(named, stored=current.event_time, keep_stored=True)
+        strength = current.strength if pref.strength is None else pref.strength
+        about_entity = current.about_entity if pref.about_entity is None else pref.about_entity
     merged_props = _merge_props(current.properties if current is not None else None, pref.properties)
     props = encode_preference_props(
         ns=ns,
@@ -2796,8 +2871,8 @@ async def upsert_preference(
         revision=1 if current is None else current.revision + 1,
         subject_entity=pref.subject_entity,
         key=_ids.normalize_text(pref.key),
-        about_entity=pref.about_entity,
-        strength=pref.strength,
+        about_entity=about_entity,
+        strength=strength,
         properties=merged_props,
         event_time=event_time,
         created_at=created_at,
@@ -2806,8 +2881,8 @@ async def upsert_preference(
 
     if (
         current is not None
-        and current.strength == pref.strength
-        and current.about_entity == pref.about_entity
+        and current.strength == strength
+        and current.about_entity == about_entity
         and current.properties == merged_props
         and to_iso(current.event_time) == to_iso(event_time)
     ):

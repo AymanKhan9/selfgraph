@@ -13,7 +13,7 @@ Properties to rely on:
 - Ids are deterministic and every insert is an idempotent upsert, so re-inserting a fact does not duplicate it or bump a version.
 - Relations and preferences are versioned: changing them creates a new revision and keeps the history. Decisions are updated in place.
 - Every graph has a `namespace` (default `"default"`); reads and writes never cross namespaces, so keep one per tenant.
-- Out of scope by design: embeddings, vector or semantic search, and GraphRAG. Retrieval is lexical (BM25 and substring) plus graph traversal.
+- Retrieval is lexical (BM25 and substring) plus graph traversal by default; passing a caller-supplied `embedder=` adds an optional embeddings seed tier. Out of scope by design: a vector store, a bundled embedding model, and GraphRAG.
 
 ## Install
 
@@ -234,7 +234,7 @@ selfgraph retrieve "who led the acquisition" --context-only
 selfgraph mcp
 ```
 
-`selfgraph mcp` serves 34 tools over stdio that mirror the SDK (listed in `docs/mcp.md`). Configure with flags or `SELFGRAPH_STORE`, `SELFGRAPH_URI`, `SELFGRAPH_AUTH`, `SELFGRAPH_DATABASE`, `SELFGRAPH_NAMESPACE`, `SELFGRAPH_LLM_PROVIDER`, `SELFGRAPH_LLM_MODEL`, `SELFGRAPH_LLM_API_KEY`, `SELFGRAPH_LLM_BASE_URL`, `SELFGRAPH_LLM_TIMEOUT`, `SELFGRAPH_LLM_CONCURRENCY`, `SELFGRAPH_SCHEMA`, `SELFGRAPH_SCHEMA_MODE`, `SELFGRAPH_RESOLVER`, `SELFGRAPH_CONTRADICTION`, `SELFGRAPH_INSTRUCTIONS`, and `SELFGRAPH_PROMPTS`. With no store and no URI they use embedded Kuzu at `~/.selfgraph/default.kuzu`. Time arguments are ISO 8601 text; no offset means UTC. The MCP `run_cypher` tool is read-only and not namespace-scoped, so filter on `ns`. CLI exit codes: 0 success, 1 runtime failure, 2 invalid input, 130 interrupted, 141 closed stdout (`docs/cli.md`).
+`selfgraph mcp` serves 38 tools over stdio that mirror the SDK (listed in `docs/mcp.md`). Configure with flags or `SELFGRAPH_STORE`, `SELFGRAPH_URI`, `SELFGRAPH_AUTH`, `SELFGRAPH_DATABASE`, `SELFGRAPH_NAMESPACE`, `SELFGRAPH_LLM_PROVIDER`, `SELFGRAPH_LLM_MODEL`, `SELFGRAPH_LLM_API_KEY`, `SELFGRAPH_LLM_BASE_URL`, `SELFGRAPH_LLM_TIMEOUT`, `SELFGRAPH_LLM_CONCURRENCY`, `SELFGRAPH_SCHEMA`, `SELFGRAPH_SCHEMA_MODE`, `SELFGRAPH_RESOLVER`, `SELFGRAPH_CONTRADICTION`, `SELFGRAPH_LEVEL`, `SELFGRAPH_MAX_TIER`, `SELFGRAPH_INSTRUCTIONS`, and `SELFGRAPH_PROMPTS`. With no store and no URI they use embedded Kuzu at `~/.selfgraph/default.kuzu`. Time arguments are ISO 8601 text; no offset means UTC. The MCP `run_cypher` tool is read-only and not namespace-scoped, so filter on `ns`. CLI exit codes: 0 success, 1 runtime failure, 2 invalid input, 130 interrupted, 141 closed stdout (`docs/cli.md`).
 
 ## TypeScript
 

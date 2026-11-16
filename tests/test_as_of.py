@@ -328,3 +328,25 @@ def test_known_at_quotes_a_passage_only_once_its_evidence_was_recorded():
     run(g.insert.text("Ann met Bob.", source_id="note"))
     assert "Ann met Bob." in run(g.retrieve("Bob")).context
     assert "Ann met Bob." not in run(g.retrieve("Bob", known_at=learned)).context
+
+
+def test_known_at_keeps_the_retirement_a_late_middle_fact_corrected():
+    g = employment_graph("asof", contradiction="supersede")
+    run(g.insert.facts({"entities": [{"type": "Company", "name": "Initech"}]}))
+    acme = run(g.relations.create("person:ann", "WORKS_AT", "company:acme", event_time=utc(2020)))
+    initech = run(g.relations.create("person:ann", "WORKS_AT", "company:initech", event_time=utc(2024)))
+    learned = instant()
+    globex = run(g.relations.create("person:ann", "WORKS_AT", "company:globex", event_time=utc(2022)))
+
+    def held(year, **at):
+        return {r.id for r in run(g.retrieve("Ann", as_of=utc(year, 6), **at)).subgraph.relations}
+
+    assert (held(2021), held(2023), held(2025)) == ({acme.id}, {globex.id}, {initech.id})
+    assert (held(2021, known_at=learned), held(2023, known_at=learned), held(2025, known_at=learned)) == (
+        {acme.id},
+        {acme.id},
+        {initech.id},
+    )
+    [new, old] = run(g.relations.versions(acme.id))
+    assert (old.invalidated_by, old.invalidated_at) == (initech.id, utc(2024))
+    assert (new.invalidated_by, new.invalidated_at, new.revision) == (globex.id, utc(2022), old.revision + 1)

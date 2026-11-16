@@ -69,6 +69,10 @@ serialize with `schema.model_dump(by_alias=True)` (or
 `model_dump_json(by_alias=True)`) to get the `from` key. A plain `model_dump()`
 writes `from_`.
 
+The `types` of an endpoint name entity types the same way entities do: by name or alias,
+ignoring case, with the parent chain followed. An entity typed `Company` matches an
+endpoint that lists `org`, where `org` is an alias of `Company`.
+
 ### Invalid schemas
 
 An unknown key is rejected ([Unknown keys](inserting.md#unknown-keys)). Names
@@ -83,6 +87,7 @@ first problem by its path:
 | Two entity types with the same name, ignoring case | `entities[1].name: duplicate entity type 'Person'` |
 | A `parent` that is no entity type name or alias | `entities[1].parent: unknown type 'X'` |
 | A `parent` chain that loops back | `entities[0].parent: parent cycle 'A' -> 'B' -> 'A'` |
+| An endpoint type that is no entity type name or alias, in a schema with entities | `relations[0].to.types[1]: unknown type 'B'` |
 | Two relation types equal after normalization | `relations[1].type: duplicate relation type 'works at'` |
 | `max_count` below 1 | `relations[0].from.max_count: must be >= 1` |
 | `min_count` below 0 | `relations[0].to.min_count: must be >= 0` |
@@ -255,6 +260,15 @@ A retired relation keeps its revision and gains four fields:
 Example: with facts from 2019, 2020, and 2022, the 2019 one is invalidated by the
 2020 one at 2020. An `as_of` of 2020-06 shows only the 2020 fact.
 
+A fact that arrives late and lands between a retired relation and the fact that retired it
+changes which fact displaced the retired one. The retired relation then takes a new revision
+that copies its content and carries the corrected `invalidated_by` and `invalidated_at`, so a
+[`known_at`](retrieval.md#as-the-graph-knew-it) read from before that write still sees the
+earlier retirement.
+
+A relation constrained at both endpoints ends at the earliest time either endpoint displaces it,
+whichever order the facts arrive in.
+
 - New versions are written before any retirement.
 - The ranking covers every current relation at the endpoint, including one being
   restated, such as one of two that a `warn` insert left current.
@@ -343,10 +357,12 @@ Within the mapped subset above, a round trip is lossless. Outside it:
 - Import drops what SelfGraph does not model: `UNIQUENESS` constraints, the
   uniqueness half of `KEY`, the `additional_*` flags, indexes, and any other key.
 - Export warns about `name`, `version`, `parent`, cardinality, `json`
-  properties, and an endpoint constrained on one side only.
+  properties, `synonyms`, `mappings`, `definitions`, the `certified` flag, and
+  an endpoint constrained on one side only.
 - Neo4j to SelfGraph to Neo4j turns `DATE` and `LOCAL_DATETIME` into
   `ZONED_DATETIME`.
-- SelfGraph to Neo4j to SelfGraph loses `parent`, `min_count`, and `max_count`.
+- SelfGraph to Neo4j to SelfGraph loses `parent`, `min_count`, `max_count`,
+  `synonyms`, `mappings`, `definitions`, and each type's `certified` flag.
 
 Each direction names every loss in one warning on the `selfgraph` logger. The
 CLI and TypeScript print it on stderr.

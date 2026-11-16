@@ -1,6 +1,17 @@
 import type { Evidence, GraphStore, Page } from "../../src/index.js";
-import { FalkorDBStore, fromTables, ids, KuzuStore, SelfGraph, toJsonable } from "../../src/index.js";
+import {
+  FalkorDBStore,
+  fromTables,
+  ids,
+  KuzuStore,
+  SelfGraph,
+  toJsonable,
+  toNeo4jOntology,
+  ValidationError,
+} from "../../src/index.js";
+import { setLogger } from "../../src/internal/log.js";
 import { comparePy } from "../../src/internal/py.js";
+import { jsonIso } from "../../src/internal/time.js";
 import { Extraction, parseOrThrow } from "../../src/models.js";
 import { tokens } from "../../src/retrieval.js";
 import { Schema, validateAgainstSchema } from "../../src/schema.js";
@@ -39,6 +50,8 @@ const TABLES = [
       { name: "is_void", type: "BOOLEAN" },
       { name: "payload", type: "jsonb" },
       { name: "qty", type: "smallint" },
+      { name: "pickup", type: "point" },
+      { name: "lead_time", type: "interval" },
       { name: "untyped" },
     ],
   },
@@ -50,9 +63,30 @@ const TABLES = [
     ],
   },
   { name: "Customers", columns: [{ name: "parent_id", references: "Customers" }] },
+  { name: "addresses", columns: [{ name: "status_id", references: "order_statuses" }] },
+  { name: "movies" },
   { name: "order_statuses" },
   { name: "Companies", columns: [{ name: "customer_id", references: "Customers" }] },
 ];
+
+const NEO4J_LOSS_SPEC = {
+  name: "conformance",
+  entities: [
+    {
+      name: "Person",
+      aliases: ["Human"],
+      synonyms: ["individual"],
+      certified: true,
+      mappings: [{ source: "crm", table: "users" }],
+      definitions: [{ name: "seniority", expression: "count(Job)" }],
+    },
+    { name: "Org" },
+    { name: "Company", parent: "Org" },
+  ],
+  relations: [
+    { type: "OWNS", synonyms: ["holds"], certified: true, from: { types: ["Person"] }, to: { types: ["Company"] } },
+  ],
+};
 
 const SCHEMA_SPEC = {
   name: "conformance",
@@ -150,9 +184,25 @@ function unknownKeyError(kind: "facts" | "schema", value: unknown): string {
 }
 
 /**
+ * Export a schema holding every field the Neo4j ontology cannot carry, and return what it logs.
+ *
+ * @return (string): the logged warning lines joined by newlines, empty when the export logs nothing.
+ */
+export function neo4jExportWarnings(): string {
+  const lines: string[] = [];
+  const previous = setLogger((message) => lines.push(message));
+  try {
+    toNeo4jOntology(Schema.parse(NEO4J_LOSS_SPEC));
+  } finally {
+    setLogger(previous);
+  }
+  return lines.join("\n");
+}
+
+/**
  * Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
  *
- * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[]; tables: unknown; term_forms: unknown; terms: unknown[] }): one list per case, one message per unknown-key case, the schema drafted from tables, the schema term forms, and the expanded tokens per question.
+ * @return ({ warnings: Array<Array<{ code: string; message: string }>>; unknown_keys: string[]; tables: unknown; term_forms: unknown; terms: unknown[]; neo4j_dropped: string }): one list per case, one message per unknown-key case, the schema drafted from tables, the schema term forms, the expanded tokens per question, and the fields the Neo4j export drops.
  */
 export function schemaWarnings(): {
   warnings: Array<Array<{ code: string; message: string }>>;
@@ -160,6 +210,7 @@ export function schemaWarnings(): {
   tables: unknown;
   term_forms: unknown;
   terms: unknown[];
+  neo4j_dropped: string;
 } {
   const terms = Schema.parse(TERMS_SPEC);
   const schema = Schema.parse(SCHEMA_SPEC);
@@ -172,6 +223,7 @@ export function schemaWarnings(): {
     ),
     unknown_keys: UNKNOWN_KEY_CASES.map(([kind, value]) => unknownKeyError(kind, value)),
     tables: toJsonable(fromTables(TABLES, { name: "sales" })),
+    neo4j_dropped: neo4jExportWarnings(),
     term_forms: Object.fromEntries(
       Object.entries(schemaForms(terms)).map(([kind, named]) => [kind, Object.fromEntries(named)]),
     ),
@@ -193,6 +245,8 @@ export const FACTS = {
     { type: "Database", name: "HydraDB" },
     { type: "Database", name: "Postgres" },
     { type: "Person", name: "Zoë Ångström" },
+    { type: "Person", name: "राम" },
+    { type: "Person", name: "रीमा" },
   ],
   relations: [
     {
@@ -208,6 +262,7 @@ export const FACTS = {
       event_time: "2024-03-01T12:30:00.654321Z",
     },
     { from_entity: ZOE, type: "KNOWS", to_entity: "person:jane-doe" },
+    { from_entity: ids.entityId("Person", "रीमा"), type: "रहती है", to_entity: "database:postgres" },
   ],
   preferences: [
     {
@@ -273,9 +328,28 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   out.pref_update = toJsonable(await graph.preferences.update(pref, { strength: 0.25 }));
   const dec = ids.decisionId("person:jane-doe", "Pick HydraDB");
   out.dec_update = toJsonable(await graph.decisions.update(dec, { status: "active", rationale: null }));
+  const restated = { title: "Pick HydraDB", actor_entity: "person:jane-doe" };
+  out.dec_restate = toJsonable(await graph.insert.facts({ decisions: [restated] }));
+  out.rel_restate = toJsonable(
+    await graph.insert.facts({
+      relations: [{ from_entity: "company:acme", type: "USES", to_entity: "database:hydradb" }],
+    }),
+  );
+  out.pref_restate = toJsonable(
+    await graph.insert.facts({
+      preferences: [
+        {
+          subject_entity: "person:jane-doe",
+          key: "database",
+          value_entity: "database:hydradb",
+        },
+      ],
+    }),
+  );
   out.ent_update = toJsonable(
     await graph.entities.update("company:acme", { aliases: ["ACME", "Acme Co"], properties: { hq: "Paris", n: 3 } }),
   );
+  out.ent_type_case = toJsonable(await graph.insert.facts({ entities: [{ type: "company", name: "Acme, Inc." }] }));
   out.rel_create = toJsonable(
     await graph.relations.create("thing:grace-hopper", "PIONEERED", "thing:cobol", {
       properties: { year: 1959 },
@@ -291,9 +365,36 @@ export async function write(graph: SelfGraph): Promise<Record<string, unknown>> 
   await graph.entities.create("Temp Thing", "Thing", { properties: { k: "v" } });
   await graph.relations.create("thing:temp-thing", "TOUCHES", "company:acme");
   await graph.preferences.create("thing:temp-thing", "color", "company:acme", { strength: 1.0 });
+  try {
+    await graph.entities.create("Unsafe", "Thing", { properties: { n: 2 ** 53 } } as never);
+    out.unsafe_integer = "accepted";
+  } catch (exc) {
+    if (!(exc instanceof ValidationError)) throw exc;
+    out.unsafe_integer = exc.message;
+  }
   out.ent_delete = toJsonable(await graph.entities.delete("thing:temp-thing"));
   out.rel_delete = toJsonable(await graph.relations.delete(ids.relationId(ZOE, "KNOWS", "person:jane-doe")));
+  out.retrieval_overflow = await overflow(graph);
   return out;
+}
+
+/**
+ * Retrieve under a budget where a near line fits, the next overflows under any counter, and short lines remain.
+ *
+ * @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+ * @return (Promise<{ tight: string; full: string }>): the context at the tight budget and at the default one.
+ */
+async function overflow(graph: SelfGraph): Promise<{ tight: string; full: string }> {
+  const g = new SelfGraph(graph.store, { namespace: `${graph.namespace}_budget` });
+  for (const name of ["Ann", "Bob", "Cid"])
+    await g.entities.create(name, "Person", { id: `person:${name.toLowerCase()}` });
+  await g.relations.create("person:ann", "KNOWS", "person:bob");
+  await g.relations.create("person:bob", "KNOWS", "person:cid", {
+    properties: { note: "met at the old harbour ".repeat(20) },
+  });
+  const tight = await g.retrieve("Ann", { k: 1, depth: 2, budget_tokens: 12 });
+  const full = await g.retrieve("Ann", { k: 1, depth: 2 });
+  return { tight: tight.context, full: full.context };
 }
 
 async function allEvidence(list: (cursor: string | null) => Promise<Page<Evidence>>): Promise<Evidence[]> {
@@ -351,6 +452,7 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
     max_nodes: 4,
   });
   const dfs = await graph.retrieve("Zoë ÅNGSTRÖM acme", { strategy: "dfs", depth: 2 });
+  const marks = await graph.retrieve("रीमा कहाँ रहती है?", { depth: 1 });
   const tight: Record<string, unknown> = {};
   for (const walk of ["bfs", "dfs"] as const) {
     const r = await graph.retrieve("Grace Hopper COBOL Jane acme", { strategy: walk, k: 1, depth: 4, max_nodes: 3 });
@@ -364,8 +466,10 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
     const r = await termed.retrieve("which employers hired staff members named Hopper", { seeds: tier, depth: 0 });
     seeded[tier] = { seeds: r.seeds, tiers: r.tiers };
   }
+  const pruned = await termed.maintenance.prune({ older_than: new Date(), types: ["User", "DATABASE"] });
   return toJsonable({
     answerable,
+    prune_types: pruned,
     retrieval_seeded: seeded,
     tiers: termed.tiers,
     entities,
@@ -382,6 +486,61 @@ export async function dump(graph: SelfGraph, ns: string): Promise<unknown> {
     retrieval: { seeds: retrieval.seeds, context: retrieval.context },
     retrieval_ppr: { seeds: ppr.seeds, context: ppr.context, entities: ppr.subgraph.entities.map((e) => e.id) },
     retrieval_dfs: { seeds: dfs.seeds, context: dfs.context },
+    retrieval_marks: { seeds: marks.seeds, context: marks.context },
     retrieval_tight: tight,
   });
+}
+
+export const SUPERSEDE_SCHEMA: Schema = {
+  entities: [{ name: "Person" }, { name: "Company" }],
+  relations: [
+    { type: "WORKS_AT", from: { types: ["Person"], max_count: 1 }, to: { types: ["Company"], max_count: 1 } },
+  ],
+};
+
+/**
+ * Supersede relations capped at both endpoints, with facts arriving out of order across batches.
+ *
+ * @param graph (SelfGraph): a graph with a two-sided max_count schema and contradiction "supersede".
+ * @return (Promise<Record<string, unknown>>): each relation's versions, newest first, and the warning codes of each insert.
+ */
+export async function supersede(graph: SelfGraph): Promise<Record<string, unknown>> {
+  await graph.insert.facts({
+    entities: [
+      ...["Ann", "Bob"].map((name) => ({ type: "Person", name })),
+      ...["Acme", "Globex", "Initech"].map((name) => ({ type: "Company", name })),
+    ],
+  });
+  const link = (person: string, company: string, year: number) => ({
+    from_entity: `person:${person}`,
+    type: "WORKS_AT",
+    to_entity: `company:${company}`,
+    event_time: new Date(Date.UTC(year, 0, 1)),
+  });
+  const batches = [
+    [link("ann", "acme", 2020)],
+    [link("ann", "initech", 2026)],
+    [link("ann", "globex", 2024), link("bob", "acme", 2022)],
+  ];
+  const warnings: string[][] = [];
+  for (const relations of batches) {
+    const result = await graph.insert.facts({ relations });
+    warnings.push(result.warnings.map((w) => w.code));
+  }
+  const versions: Record<string, unknown> = {};
+  for (const [person, company] of [
+    ["ann", "acme"],
+    ["ann", "globex"],
+    ["ann", "initech"],
+    ["bob", "acme"],
+  ]) {
+    const rid = ids.relationId(`person:${person}`, "WORKS_AT", `company:${company}`);
+    versions[rid] = (await graph.relations.versions(rid)).map((v) => [
+      v.revision,
+      v.is_current,
+      v.invalidated_by,
+      v.invalidated_at ? jsonIso(v.invalidated_at) : null,
+    ]);
+  }
+  return { warnings, versions };
 }

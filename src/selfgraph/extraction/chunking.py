@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from .._ops import _require_int
-from ..errors import ValidationError
+from ..errors import ValidationError, error_reason
 
 __all__ = ["Chunk", "chunk_text", "count_tokens"]
+
+_log = logging.getLogger("selfgraph")
 
 _ENCODER = None
 _ENCODER_READY = False
 
 
 def _encoder():
-    """Return a cached tiktoken encoder, or None when tiktoken is unavailable.
+    """Return a cached tiktoken encoder, or None when tiktoken is not installed or cl100k_base fails to load.
+
+    A load failure, such as no network for the first download, is logged once as a warning.
 
     @return (object | None): the encoder, or None.
     """
@@ -21,10 +26,16 @@ def _encoder():
         _ENCODER_READY = True
         try:
             import tiktoken
-
+        except ImportError:
+            return None
+        try:
             _ENCODER = tiktoken.get_encoding("cl100k_base")
-        except Exception:  # noqa: BLE001  # pragma: no cover
-            _ENCODER = None
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "tiktoken is installed but could not load cl100k_base (%s); token counts and chunks fall back to a "
+                "length estimate; set TIKTOKEN_CACHE_DIR to a directory holding the cached encoding to run offline",
+                error_reason(exc),
+            )
     return _ENCODER
 
 

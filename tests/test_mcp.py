@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import logging
@@ -31,6 +32,89 @@ def test_tools_build_and_read_graph():
         if RAW_CYPHER:
             rows = run(srv.run_cypher("MATCH (e:Entity {id:'company:hydradb', ns:'default'}) RETURN e.id AS id"))
             assert {"id": "company:hydradb"} in rows["rows"]
+
+
+def test_concurrent_first_calls_open_one_graph(monkeypatch):
+    opened = []
+    real = srv.build_graph
+
+    def counting(settings):
+        graph = real(settings)
+        opened.append(graph)
+        return graph
+
+    monkeypatch.setattr(srv, "build_graph", counting)
+
+    async def first_calls():
+        return await asyncio.gather(*(srv.check_readiness() for _ in range(5)))
+
+    with mcp_session():
+        results = run(first_calls())
+    assert len(opened) == 1
+    assert all(result["reachable"] for result in results)
+
+
+class _SlowGraph:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.closed = 0
+
+    async def initialize(self):
+        self.started.set()
+        await self.release.wait()
+
+    async def close(self):
+        self.closed += 1
+
+
+@pytest.fixture
+def slow_graph(monkeypatch):
+    graph = _SlowGraph()
+    monkeypatch.setattr(srv, "build_graph", lambda settings: graph)
+    run(srv.configure(srv.GraphSettings(store="kuzu")))
+    yield graph
+    run(srv.close())
+
+
+def test_close_while_opening_closes_the_graph(slow_graph):
+    async def scenario():
+        first = asyncio.ensure_future(srv._graph_handle())
+        await slow_graph.started.wait()
+        await srv.close()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+    run(scenario())
+    assert slow_graph.closed == 1
+    assert srv._graph is None
+
+
+def test_configure_while_opening_closes_the_graph(slow_graph):
+    async def scenario():
+        first = asyncio.ensure_future(srv._graph_handle())
+        await slow_graph.started.wait()
+        await srv.configure(srv.GraphSettings(store="kuzu"))
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+    run(scenario())
+    assert slow_graph.closed == 1
+
+
+def test_cancelled_first_caller_keeps_the_open_for_the_next_call(slow_graph):
+    async def scenario():
+        first = asyncio.ensure_future(srv._graph_handle())
+        await slow_graph.started.wait()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        slow_graph.release.set()
+        return await srv._graph_handle()
+
+    assert run(scenario()) is slow_graph
+    run(srv.close())
+    assert slow_graph.closed == 1
 
 
 def test_build_server_contract():
@@ -223,7 +307,8 @@ def test_facts_evidence_versions_dry_runs_and_decision_steps():
     with mcp_session():
         out = run(srv.insert_facts(AB_FACTS, source_id="s1", event_time="2020-05-01"))
         assert out["relations"][0]["event_time"] == "2020-05-01T00:00:00Z"
-        run(srv.insert_facts(AB_FACTS, source_id="s2"))
+        again = run(srv.insert_facts(AB_FACTS, source_id="s2"))
+        assert again["relations"][0]["event_time"] == "2020-05-01T00:00:00Z"
         assert run(srv.get_entity("t:a"))["source_count"] == 2
         first = run(srv.entity_evidence("t:a", limit=1))
         rest = run(srv.entity_evidence("t:a", limit=1, cursor=first["next_cursor"]))
@@ -236,7 +321,7 @@ def test_facts_evidence_versions_dry_runs_and_decision_steps():
         sources = sorted(e["source_id"] for e in run(srv.relation_evidence("relation:ab"))["items"])
         assert sources == ["doc-2", "s1", "s2"]
         assert run(srv.get_relation("relation:ab"))["type"] == "KNOWS"
-        assert [v["revision"] for v in run(srv.relation_versions("relation:ab"))] == [3, 2, 1]
+        assert [v["revision"] for v in run(srv.relation_versions("relation:ab"))] == [2, 1]
 
         assert "deleted" not in run(srv.maintenance_prune(min_relevance=0.5))
         assert "deleted" not in run(srv.maintenance_dedupe_relations())

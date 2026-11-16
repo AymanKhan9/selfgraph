@@ -2,6 +2,7 @@ import { blake2b } from "@noble/hashes/blake2.js";
 import { bytesToHex, concatBytes } from "@noble/hashes/utils.js";
 
 import { ValidationError } from "./errors.js";
+import { MARK_CLASS } from "./internal/marks.js";
 import { cpLen, PY_WORD_CLASS, PY_WS_CLASS, pyCollapseWs, pyRepr, pySplit, pyStrip, utf8 } from "./internal/py.js";
 import type { Evidence } from "./models.js";
 import { requireStr } from "./validate.js";
@@ -21,8 +22,9 @@ export const RESERVED_ID_PREFIXES: ReadonlySet<string> = new Set(ID_PREFIXES);
 
 const tagged = (prefix: (typeof ID_PREFIXES)[number], rest: string): string => `${prefix}:${rest}`;
 
-const PUNCT = new RegExp(`[^${PY_WORD_CLASS}${PY_WS_CLASS}]+`, "gu");
-const NON_IDENT = new RegExp(`[^${PY_WORD_CLASS}]+`, "gu");
+const MARK = new RegExp(`^[${MARK_CLASS}]$`, "u");
+const PUNCT = new RegExp(`[^${PY_WORD_CLASS}${PY_WS_CLASS}${MARK_CLASS}]+`, "gu");
+const NON_IDENT = new RegExp(`[^${PY_WORD_CLASS}${MARK_CLASS}]+`, "gu");
 const CAMEL = /(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/g;
 const ENTITY_SUFFIXES = new Set([
   "inc",
@@ -80,6 +82,29 @@ function hashParts(...parts: Array<string | null | undefined>): string {
 }
 
 /**
+ * Report whether a character is a combining mark that is part of the word it follows: a vowel sign, virama, nukta, or tone mark (general category Mn or Mc), which NFC cannot fold into a letter. The marks are the ones of Unicode 15.0, listed in internal/marks so that every Node and Python version classifies them alike; the variation selectors are left out, so an emoji presentation selector still drops with its emoji.
+ *
+ * @param ch (string): one character.
+ * @return (boolean): true for a nonspacing or spacing mark other than a variation selector.
+ */
+export function isMark(ch: string): boolean {
+  return MARK.test(ch);
+}
+
+/**
+ * Split text into its runs of letters and digits, each with the combining marks written on them.
+ *
+ * @param text (string): the text to split.
+ * @return (string[]): the runs, in order; underscore, whitespace, punctuation, and symbols separate them.
+ */
+export function wordRuns(text: string): string[] {
+  return text
+    .replace(NON_IDENT, "_")
+    .split("_")
+    .filter((run) => run.length > 0);
+}
+
+/**
  * NFC-normalize text so an id, its stored field, and a filter argument share one byte form.
  *
  * @param value (string): the text.
@@ -110,7 +135,7 @@ function canonicalName(type: string, rawName: string): string {
 }
 
 /**
- * Derive an entity id "<type>:<canonical-name>", dropping punctuation and, for organisation-like types, a leading article and trailing corporate suffixes.
+ * Derive an entity id "<type>:<canonical-name>", dropping punctuation, keeping combining marks, and, for organisation-like types, dropping a leading article and trailing corporate suffixes.
  *
  * @param type (string): the entity type.
  * @param name (string): the entity name.

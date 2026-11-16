@@ -86,7 +86,7 @@ class _DecOut(BaseModel):
     rationale: str | None = None
     outcome_name: str | None = None
     alternative_names: list[str] = Field(default_factory=list)
-    status: Status = "completed"
+    status: Status | None = None
     steps: list[_StepOut] = Field(default_factory=list)
     _evidence: EvidenceInput | None = PrivateAttr(default=None)
 
@@ -334,9 +334,16 @@ class LLMExtractor(_WarningSink):
             if name is None or not name.strip():
                 return None
             key = _norm(name)
-            ent = registry.get(key) or next(
-                (e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)), None
-            )
+            try:
+                ent = registry.get(key) or next(
+                    (e for e in registry.values() if _ids.entity_id(e.type, name) == _ids.entity_id(e.type, e.name)),
+                    None,
+                )
+            except ValidationError as exc:
+                if key not in rejected:
+                    rejected.add(key)
+                    _dropped(sink, "entity", exc)
+                return None
             if ent is None:
                 if _is_noise_name(name) or key in rejected:
                     return None

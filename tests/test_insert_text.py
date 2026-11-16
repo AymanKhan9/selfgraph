@@ -1,4 +1,5 @@
 import logging
+import unicodedata
 
 import pytest
 from helpers import FakeLLM, extracting_llm, fresh_graph, new_graph, run
@@ -91,6 +92,58 @@ def test_insert_text_without_llm_uses_ner_extractor(caplog):
     assert any(w.code == "basic_extraction" for w in res.warnings)
     assert any(r.getMessage().startswith("basic_extraction: extracted without an LLM") for r in caplog.records)
     assert all("pass llm= to SelfGraph" in w.message for w in res.warnings if w.code == "basic_extraction")
+
+
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        ("# Acme Handbook\n\nAcme was founded in 2019 by Jane Doe.", ["Acme Handbook", "Acme", "Jane Doe"]),
+        ("Company Handbook\nAnn works at Acme.", ["Company Handbook", "Ann", "Acme"]),
+        ("Attendees:\nAnn Smith\nBob Lee", ["Attendees", "Ann Smith", "Bob Lee"]),
+        ("Acme Report\r\nAnn works at Acme.", ["Acme Report", "Ann", "Acme"]),
+        ("Ann\tSmith works at Acme.", ["Ann Smith", "Acme"]),
+        ("Acme Report\fAnn works at Acme.", ["Acme Report", "Ann", "Acme"]),
+        ("Acme Report\u2028Ann works at Acme.", ["Acme Report", "Ann", "Acme"]),
+    ],
+    ids=["heading", "title-line", "list", "crlf", "tab", "form-feed", "line-separator"],
+)
+def test_regex_extraction_stops_names_at_line_breaks(text, names):
+    res = run(fresh_graph("lines", extraction="regex").insert.text(text))
+    assert sorted(e.name for e in res.entities) == sorted(names)
+    assert [w.code for w in res.warnings] == ["basic_extraction"]
+
+
+@pytest.mark.parametrize("form", ["NFC", "NFD"])
+def test_regex_extraction_keeps_names_with_combining_marks_whole(form):
+    text = unicodedata.normalize(form, "Zoë met José García at Café Société in São Paulo.")
+    res = run(fresh_graph("marks", extraction="regex").insert.text(text))
+    names = ["Zoë", "José García", "Café Société", "São Paulo"]
+    assert sorted(e.name for e in res.entities) == sorted(names)
+
+
+def test_regex_extraction_keeps_a_mark_with_no_precomposed_form():
+    res = run(fresh_graph("marks", extraction="regex").insert.text("Ann met Q\u0307ing Lee at Acme."))
+    assert sorted(e.name for e in res.entities) == sorted(
+        ["Ann", unicodedata.normalize("NFC", "Q\u0307ing Lee"), "Acme"]
+    )
+
+
+def test_regex_extraction_still_relates_names_in_a_sentence_wrapped_across_lines():
+    res = run(fresh_graph("wrapped", extraction="regex").insert.text("Jane Doe met\nBob Smith at Acme."))
+    assert {(r.from_entity, r.to_entity) for r in res.relations} == {
+        ("thing:jane-doe", "thing:bob-smith"),
+        ("thing:bob-smith", "thing:acme"),
+    }
+
+
+def test_extracted_relation_with_an_invalid_endpoint_is_dropped_with_a_warning():
+    g = new_graph(llm=extracting_llm([("Person", "Ann")], [("Bob\nLee", "KNOWS", "Ann")]))
+    res = run(g.insert.text("Bob Lee knows Ann.", source_id="bad-endpoint"))
+    assert [e.id for e in res.entities] == ["person:ann"]
+    assert res.relations == []
+    assert [w.message for w in res.warnings if w.code == "extraction_partial_failure"] == [
+        "dropped an extracted entity: entity name cannot contain control or surrogate characters"
+    ]
 
 
 def test_custom_extractor_bypasses_the_llm_and_receives_the_insert_metadata():
@@ -258,3 +311,12 @@ def test_llm_relations_cite_their_chunk_and_progress_is_logged(caplog):
     evidence = run(g.relations.evidence(rel.id, limit=100)).items
     assert {ev.chunk_id for ev in evidence} == {_ids.chunk_id(res.source_version, i) for i in range(total)}
     assert all(ev.source_version == res.source_version for ev in evidence)
+
+
+def test_llm_restatement_keeps_the_stored_decision_fields():
+    g = fresh_graph("restate", llm=FakeLLM(_full_responses()))
+    [dec] = run(g.insert.text("The team selected HydraDB.", source_id="m1")).decisions
+    assert dec.status == "completed"
+    run(g.decisions.update(dec.id, status="active", rationale="needs temporal history"))
+    [again] = run(g.insert.text("The team picked HydraDB again.", source_id="m2")).decisions
+    assert (again.id, again.status, again.rationale) == (dec.id, "active", "needs temporal history")

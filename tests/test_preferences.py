@@ -99,6 +99,45 @@ def test_insert_result_lists_each_preference_once():
     assert [(p.id, p.strength) for p in result.preferences] == [(result.preferences[0].id, 0.7)]
 
 
+def test_undated_preference_restatement_keeps_strength_and_event_time():
+    g = fresh_graph("pref-restatement")
+    seed(g)
+    run(
+        g.insert.facts(
+            {
+                "preferences": [
+                    {
+                        "subject_entity": "person:soham",
+                        "key": "database",
+                        "value_entity": "company:hydradb",
+                        "strength": 0.9,
+                        "about_entity": "company:neo4j",
+                        "event_time": "2020-01-01T00:00:00+00:00",
+                    }
+                ]
+            },
+            source_id="a",
+        )
+    )
+    run(
+        g.insert.facts(
+            {
+                "preferences": [
+                    {
+                        "subject_entity": "person:soham",
+                        "key": "database",
+                        "value_entity": "company:hydradb",
+                    }
+                ]
+            },
+            source_id="b",
+        )
+    )
+    [pref] = run(g.preferences.list()).items
+    assert (pref.strength, pref.about_entity, pref.revision) == (0.9, "company:neo4j", 1)
+    assert pref.event_time.isoformat() == "2020-01-01T00:00:00+00:00"
+
+
 def test_update_clears_named_fields_and_null_keeps():
     g = fresh_graph("q4")
     seed(g)

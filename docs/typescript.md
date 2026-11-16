@@ -141,9 +141,6 @@ JSON. `npx @hydradb/selfgraph mcp` serves the same 35 [MCP](mcp.md) tools.
   neo4j-driver for JavaScript does not reassemble it. `HydraDBStore.initialize()`
   opens a first pooled connection, and every query retries a failed handshake
   with jitter. This is safe because nothing has run yet.
-- Entity id canonicalization follows Python's `\w`, which excludes combining
-  marks. Names in scripts that use them (Devanagari, for example) are split at
-  those marks. Both SDKs derive the same ids.
 - The `kuzu` npm package is deprecated upstream. The Python SDK depends on the
   same release.
 

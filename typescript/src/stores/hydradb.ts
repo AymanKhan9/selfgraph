@@ -364,16 +364,18 @@ export class HydraDBStore extends AutoCommitStore implements GraphStore {
    * @return (void): nothing; throws the first error of the first wave that fails, skipping later waves.
    */
   private async drain(): Promise<void> {
-    while (this.draining) await this.draining.catch(() => undefined);
+    while (this.draining) await this.draining;
     if (!this.queued.length) return;
     const queued = this.queued;
     this.queued = [];
     this.dirty.clear();
     this.pendingNodes.clear();
     const run = this.runWaves(queued);
-    this.draining = run.finally(() => {
-      this.draining = null;
-    });
+    this.draining = run
+      .catch(() => undefined)
+      .finally(() => {
+        this.draining = null;
+      });
     await run;
   }
 

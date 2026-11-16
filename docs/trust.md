@@ -51,7 +51,10 @@ report = await graph.check_answerable("...", terms=["Ann", "churn rate"], as_of=
 The question is split into terms. Each run of words that spells a stored
 multi-word name or alias, or a multi-word schema term such as `staff size`, is
 one term, and every other word is its own term.
-Stopwords and filler such as "where", "tell", and "me" are dropped. An agent can
+Stopwords and filler such as "where", "tell", and "me" are dropped, and so are the
+possessive and contraction endings `'s`, `n't`, `'ll`, `'re`, `'ve`, `'d`, and `'m`, in the
+question and in names and synonyms alike, so "Ann's" is the term `ann` and "Ann's Bakery"
+is one term; "won't" and "can't" stay whole. An agent can
 pass its own `terms` instead.
 
 Each term is matched, in order, against entity names and aliases, then entity

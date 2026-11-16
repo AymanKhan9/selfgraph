@@ -33,10 +33,35 @@
   "Cafe\u0301 Ole\u0301": "cafe\u0301-ole\u0301",
   "Caf\u00e9 Ol\u00e9": "caf\u00e9-ol\u00e9",
   "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e": "\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
+  "\u0930\u093e\u092e": "\u0930\u093e\u092e",
+  "\u0930\u0940\u092e\u093e": "\u0930\u0940\u092e\u093e",
+  "\u0e01\u0e34\u0e19": "\u0e01\u0e34\u0e19",
+  "\u0e01\u0e31\u0e19": "\u0e01\u0e31\u0e19",
+  "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3": "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+  "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd": "\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1-ltd",
+  "Bob \u2764\ufe0f": "bob-\u2764\ufe0f",
+  "1\ufe0f\u20e3 first": "1\ufe0f\u20e3-first",
+  "\u0628\u0898\u062a": "\u0628\u0898\u062a",
+  "\u0628\u0897\u062a": "\u0628\u0897\u062a",
   "The Trial": "the-trial",
   "The Acme Corporation Inc": "the-acme-corporation-inc",
   "snake_case_name": "snake_case_name",
   "\uff21\uff43\uff4d\uff45": "\uff41\uff43\uff4d\uff45"
+ },
+ "mark_ranges": "300-36f 483-487 591-5bd 5bf 5c1-5c2 5c4-5c5 5c7 610-61a 64b-65f 670 6d6-6dc 6df-6e4 6e7-6e8 6ea-6ed 711 730-74a 7a6-7b0 7eb-7f3 7fd 816-819 81b-823 825-827 829-82d 859-85b 898-89f 8ca-8e1 8e3-903 93a-93c 93e-94f 951-957 962-963 981-983 9bc 9be-9c4 9c7-9c8 9cb-9cd 9d7 9e2-9e3 9fe a01-a03 a3c a3e-a42 a47-a48 a4b-a4d a51 a70-a71 a75 a81-a83 abc abe-ac5 ac7-ac9 acb-acd ae2-ae3 afa-aff b01-b03 b3c b3e-b44 b47-b48 b4b-b4d b55-b57 b62-b63 b82 bbe-bc2 bc6-bc8 bca-bcd bd7 c00-c04 c3c c3e-c44 c46-c48 c4a-c4d c55-c56 c62-c63 c81-c83 cbc cbe-cc4 cc6-cc8 cca-ccd cd5-cd6 ce2-ce3 cf3 d00-d03 d3b-d3c d3e-d44 d46-d48 d4a-d4d d57 d62-d63 d81-d83 dca dcf-dd4 dd6 dd8-ddf df2-df3 e31 e34-e3a e47-e4e eb1 eb4-ebc ec8-ece f18-f19 f35 f37 f39 f3e-f3f f71-f84 f86-f87 f8d-f97 f99-fbc fc6 102b-103e 1056-1059 105e-1060 1062-1064 1067-106d 1071-1074 1082-108d 108f 109a-109d 135d-135f 1712-1715 1732-1734 1752-1753 1772-1773 17b4-17d3 17dd 180b-180d 180f 1885-1886 18a9 1920-192b 1930-193b 1a17-1a1b 1a55-1a5e 1a60-1a7c 1a7f 1ab0-1abd 1abf-1ace 1b00-1b04 1b34-1b44 1b6b-1b73 1b80-1b82 1ba1-1bad 1be6-1bf3 1c24-1c37 1cd0-1cd2 1cd4-1ce8 1ced 1cf4 1cf7-1cf9 1dc0-1dff 20d0-20dc 20e1 20e5-20f0 2cef-2cf1 2d7f 2de0-2dff 302a-302f 3099-309a a66f a674-a67d a69e-a69f a6f0-a6f1 a802 a806 a80b a823-a827 a82c a880-a881 a8b4-a8c5 a8e0-a8f1 a8ff a926-a92d a947-a953 a980-a983 a9b3-a9c0 a9e5 aa29-aa36 aa43 aa4c-aa4d aa7b-aa7d aab0 aab2-aab4 aab7-aab8 aabe-aabf aac1 aaeb-aaef aaf5-aaf6 abe3-abea abec-abed fb1e fe20-fe2f 101fd 102e0 10376-1037a 10a01-10a03 10a05-10a06 10a0c-10a0f 10a38-10a3a 10a3f 10ae5-10ae6 10d24-10d27 10eab-10eac 10efd-10eff 10f46-10f50 10f82-10f85 11000-11002 11038-11046 11070 11073-11074 1107f-11082 110b0-110ba 110c2 11100-11102 11127-11134 11145-11146 11173 11180-11182 111b3-111c0 111c9-111cc 111ce-111cf 1122c-11237 1123e 11241 112df-112ea 11300-11303 1133b-1133c 1133e-11344 11347-11348 1134b-1134d 11357 11362-11363 11366-1136c 11370-11374 11435-11446 1145e 114b0-114c3 115af-115b5 115b8-115c0 115dc-115dd 11630-11640 116ab-116b7 1171d-1172b 1182c-1183a 11930-11935 11937-11938 1193b-1193e 11940 11942-11943 119d1-119d7 119da-119e0 119e4 11a01-11a0a 11a33-11a39 11a3b-11a3e 11a47 11a51-11a5b 11a8a-11a99 11c2f-11c36 11c38-11c3f 11c92-11ca7 11ca9-11cb6 11d31-11d36 11d3a 11d3c-11d3d 11d3f-11d45 11d47 11d8a-11d8e 11d90-11d91 11d93-11d97 11ef3-11ef6 11f00-11f01 11f03 11f34-11f3a 11f3e-11f42 13440 13447-13455 16af0-16af4 16b30-16b36 16f4f 16f51-16f87 16f8f-16f92 16fe4 16ff0-16ff1 1bc9d-1bc9e 1cf00-1cf2d 1cf30-1cf46 1d165-1d169 1d16d-1d172 1d17b-1d182 1d185-1d18b 1d1aa-1d1ad 1d242-1d244 1da00-1da36 1da3b-1da6c 1da75 1da84 1da9b-1da9f 1daa1-1daaf 1e000-1e006 1e008-1e018 1e01b-1e021 1e023-1e024 1e026-1e02a 1e08f 1e130-1e136 1e2ae 1e2ec-1e2ef 1e4ec-1e4ef 1e8d0-1e8d6 1e944-1e94a",
+ "is_mark": {
+  "a": false,
+  " ": false,
+  "\u093e": true,
+  "\u0301": true,
+  "\u0e34": true,
+  "\ud83a\udd4a": true,
+  "\ufe0f": false,
+  "\u20e3": false,
+  "\udb40\udd00": false,
+  "\u200d": false,
+  "\u0898": true,
+  "\u0897": false
  },
  "entity_id": [
   [
@@ -114,7 +139,7 @@
   [
    "Person",
    "\u0130stanbul",
-   "person:i-stanbul"
+   "person:i\u0307stanbul"
   ],
   [
    "Person",
@@ -158,7 +183,57 @@
   [
    "Person",
    "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
-   "person:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+   "person:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "Person",
+   "\u0930\u093e\u092e",
+   "person:\u0930\u093e\u092e"
+  ],
+  [
+   "Person",
+   "\u0930\u0940\u092e\u093e",
+   "person:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "Person",
+   "\u0e01\u0e34\u0e19",
+   "person:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "Person",
+   "\u0e01\u0e31\u0e19",
+   "person:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "Person",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "person:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "Person",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "person:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1-ltd"
+  ],
+  [
+   "Person",
+   "Bob \u2764\ufe0f",
+   "person:bob"
+  ],
+  [
+   "Person",
+   "1\ufe0f\u20e3 first",
+   "person:1-first"
+  ],
+  [
+   "Person",
+   "\u0628\u0898\u062a",
+   "person:\u0628\u0898\u062a"
+  ],
+  [
+   "Person",
+   "\u0628\u0897\u062a",
+   "person:\u0628-\u062a"
   ],
   [
    "Person",
@@ -255,7 +330,7 @@
   [
    "Big Company",
    "\u0130stanbul",
-   "big-company:i-stanbul"
+   "big-company:i\u0307stanbul"
   ],
   [
    "Big Company",
@@ -299,7 +374,57 @@
   [
    "Big Company",
    "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
-   "big-company:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+   "big-company:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "Big Company",
+   "\u0930\u093e\u092e",
+   "big-company:\u0930\u093e\u092e"
+  ],
+  [
+   "Big Company",
+   "\u0930\u0940\u092e\u093e",
+   "big-company:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "Big Company",
+   "\u0e01\u0e34\u0e19",
+   "big-company:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "Big Company",
+   "\u0e01\u0e31\u0e19",
+   "big-company:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "Big Company",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "big-company:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "Big Company",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "big-company:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1-ltd"
+  ],
+  [
+   "Big Company",
+   "Bob \u2764\ufe0f",
+   "big-company:bob"
+  ],
+  [
+   "Big Company",
+   "1\ufe0f\u20e3 first",
+   "big-company:1-first"
+  ],
+  [
+   "Big Company",
+   "\u0628\u0898\u062a",
+   "big-company:\u0628\u0898\u062a"
+  ],
+  [
+   "Big Company",
+   "\u0628\u0897\u062a",
+   "big-company:\u0628-\u062a"
   ],
   [
    "Big Company",
@@ -396,7 +521,7 @@
   [
    "  Org ",
    "\u0130stanbul",
-   "org:i-stanbul"
+   "org:i\u0307stanbul"
   ],
   [
    "  Org ",
@@ -440,7 +565,57 @@
   [
    "  Org ",
    "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
-   "org:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+   "org:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "  Org ",
+   "\u0930\u093e\u092e",
+   "org:\u0930\u093e\u092e"
+  ],
+  [
+   "  Org ",
+   "\u0930\u0940\u092e\u093e",
+   "org:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "  Org ",
+   "\u0e01\u0e34\u0e19",
+   "org:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "  Org ",
+   "\u0e01\u0e31\u0e19",
+   "org:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "  Org ",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "org:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "  Org ",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "org:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1"
+  ],
+  [
+   "  Org ",
+   "Bob \u2764\ufe0f",
+   "org:bob"
+  ],
+  [
+   "  Org ",
+   "1\ufe0f\u20e3 first",
+   "org:1-first"
+  ],
+  [
+   "  Org ",
+   "\u0628\u0898\u062a",
+   "org:\u0628\u0898\u062a"
+  ],
+  [
+   "  Org ",
+   "\u0628\u0897\u062a",
+   "org:\u0628-\u062a"
   ],
   [
    "  Org ",
@@ -537,7 +712,7 @@
   [
    "\u00dcberType",
    "\u0130stanbul",
-   "\u00fcbertype:i-stanbul"
+   "\u00fcbertype:i\u0307stanbul"
   ],
   [
    "\u00dcberType",
@@ -581,7 +756,57 @@
   [
    "\u00dcberType",
    "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
-   "\u00fcbertype:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+   "\u00fcbertype:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "\u00dcberType",
+   "\u0930\u093e\u092e",
+   "\u00fcbertype:\u0930\u093e\u092e"
+  ],
+  [
+   "\u00dcberType",
+   "\u0930\u0940\u092e\u093e",
+   "\u00fcbertype:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "\u00dcberType",
+   "\u0e01\u0e34\u0e19",
+   "\u00fcbertype:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "\u00dcberType",
+   "\u0e01\u0e31\u0e19",
+   "\u00fcbertype:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "\u00dcberType",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "\u00fcbertype:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "\u00dcberType",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "\u00fcbertype:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1-ltd"
+  ],
+  [
+   "\u00dcberType",
+   "Bob \u2764\ufe0f",
+   "\u00fcbertype:bob"
+  ],
+  [
+   "\u00dcberType",
+   "1\ufe0f\u20e3 first",
+   "\u00fcbertype:1-first"
+  ],
+  [
+   "\u00dcberType",
+   "\u0628\u0898\u062a",
+   "\u00fcbertype:\u0628\u0898\u062a"
+  ],
+  [
+   "\u00dcberType",
+   "\u0628\u0897\u062a",
+   "\u00fcbertype:\u0628-\u062a"
   ],
   [
    "\u00dcberType",
@@ -678,7 +903,7 @@
   [
    "a\u3000b",
    "\u0130stanbul",
-   "a-b:i-stanbul"
+   "a-b:i\u0307stanbul"
   ],
   [
    "a\u3000b",
@@ -722,7 +947,57 @@
   [
    "a\u3000b",
    "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
-   "a-b:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+   "a-b:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "a\u3000b",
+   "\u0930\u093e\u092e",
+   "a-b:\u0930\u093e\u092e"
+  ],
+  [
+   "a\u3000b",
+   "\u0930\u0940\u092e\u093e",
+   "a-b:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "a\u3000b",
+   "\u0e01\u0e34\u0e19",
+   "a-b:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "a\u3000b",
+   "\u0e01\u0e31\u0e19",
+   "a-b:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "a\u3000b",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "a-b:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "a\u3000b",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "a-b:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1-ltd"
+  ],
+  [
+   "a\u3000b",
+   "Bob \u2764\ufe0f",
+   "a-b:bob"
+  ],
+  [
+   "a\u3000b",
+   "1\ufe0f\u20e3 first",
+   "a-b:1-first"
+  ],
+  [
+   "a\u3000b",
+   "\u0628\u0898\u062a",
+   "a-b:\u0628\u0898\u062a"
+  ],
+  [
+   "a\u3000b",
+   "\u0628\u0897\u062a",
+   "a-b:\u0628-\u062a"
   ],
   [
    "a\u3000b",
@@ -819,7 +1094,7 @@
   [
    "Company",
    "\u0130stanbul",
-   "company:i-stanbul"
+   "company:i\u0307stanbul"
   ],
   [
    "Company",
@@ -863,7 +1138,57 @@
   [
    "Company",
    "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
-   "company:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+   "company:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "Company",
+   "\u0930\u093e\u092e",
+   "company:\u0930\u093e\u092e"
+  ],
+  [
+   "Company",
+   "\u0930\u0940\u092e\u093e",
+   "company:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "Company",
+   "\u0e01\u0e34\u0e19",
+   "company:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "Company",
+   "\u0e01\u0e31\u0e19",
+   "company:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "Company",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "company:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "Company",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "company:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1"
+  ],
+  [
+   "Company",
+   "Bob \u2764\ufe0f",
+   "company:bob"
+  ],
+  [
+   "Company",
+   "1\ufe0f\u20e3 first",
+   "company:1-first"
+  ],
+  [
+   "Company",
+   "\u0628\u0898\u062a",
+   "company:\u0628\u0898\u062a"
+  ],
+  [
+   "Company",
+   "\u0628\u0897\u062a",
+   "company:\u0628-\u062a"
   ],
   [
    "Company",
@@ -960,7 +1285,7 @@
   [
    "Organization",
    "\u0130stanbul",
-   "organization:i-stanbul"
+   "organization:i\u0307stanbul"
   ],
   [
    "Organization",
@@ -1004,7 +1329,57 @@
   [
    "Organization",
    "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
-   "organization:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+   "organization:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "Organization",
+   "\u0930\u093e\u092e",
+   "organization:\u0930\u093e\u092e"
+  ],
+  [
+   "Organization",
+   "\u0930\u0940\u092e\u093e",
+   "organization:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "Organization",
+   "\u0e01\u0e34\u0e19",
+   "organization:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "Organization",
+   "\u0e01\u0e31\u0e19",
+   "organization:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "Organization",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "organization:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "Organization",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "organization:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1"
+  ],
+  [
+   "Organization",
+   "Bob \u2764\ufe0f",
+   "organization:bob"
+  ],
+  [
+   "Organization",
+   "1\ufe0f\u20e3 first",
+   "organization:1-first"
+  ],
+  [
+   "Organization",
+   "\u0628\u0898\u062a",
+   "organization:\u0628\u0898\u062a"
+  ],
+  [
+   "Organization",
+   "\u0628\u0897\u062a",
+   "organization:\u0628-\u062a"
   ],
   [
    "Organization",
@@ -1101,7 +1476,7 @@
   [
    "Work",
    "\u0130stanbul",
-   "work:i-stanbul"
+   "work:i\u0307stanbul"
   ],
   [
    "Work",
@@ -1145,7 +1520,57 @@
   [
    "Work",
    "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
-   "work:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+   "work:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "Work",
+   "\u0930\u093e\u092e",
+   "work:\u0930\u093e\u092e"
+  ],
+  [
+   "Work",
+   "\u0930\u0940\u092e\u093e",
+   "work:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "Work",
+   "\u0e01\u0e34\u0e19",
+   "work:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "Work",
+   "\u0e01\u0e31\u0e19",
+   "work:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "Work",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "work:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "Work",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "work:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1-ltd"
+  ],
+  [
+   "Work",
+   "Bob \u2764\ufe0f",
+   "work:bob"
+  ],
+  [
+   "Work",
+   "1\ufe0f\u20e3 first",
+   "work:1-first"
+  ],
+  [
+   "Work",
+   "\u0628\u0898\u062a",
+   "work:\u0628\u0898\u062a"
+  ],
+  [
+   "Work",
+   "\u0628\u0897\u062a",
+   "work:\u0628-\u062a"
   ],
   [
    "Work",
@@ -1242,7 +1667,7 @@
   [
    " Bank ",
    "\u0130stanbul",
-   "bank:i-stanbul"
+   "bank:i\u0307stanbul"
   ],
   [
    " Bank ",
@@ -1286,7 +1711,57 @@
   [
    " Bank ",
    "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
-   "bank:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+   "bank:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   " Bank ",
+   "\u0930\u093e\u092e",
+   "bank:\u0930\u093e\u092e"
+  ],
+  [
+   " Bank ",
+   "\u0930\u0940\u092e\u093e",
+   "bank:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   " Bank ",
+   "\u0e01\u0e34\u0e19",
+   "bank:\u0e01\u0e34\u0e19"
+  ],
+  [
+   " Bank ",
+   "\u0e01\u0e31\u0e19",
+   "bank:\u0e01\u0e31\u0e19"
+  ],
+  [
+   " Bank ",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "bank:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   " Bank ",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "bank:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1"
+  ],
+  [
+   " Bank ",
+   "Bob \u2764\ufe0f",
+   "bank:bob"
+  ],
+  [
+   " Bank ",
+   "1\ufe0f\u20e3 first",
+   "bank:1-first"
+  ],
+  [
+   " Bank ",
+   "\u0628\u0898\u062a",
+   "bank:\u0628\u0898\u062a"
+  ],
+  [
+   " Bank ",
+   "\u0628\u0897\u062a",
+   "bank:\u0628-\u062a"
   ],
   [
    " Bank ",
@@ -1383,7 +1858,7 @@
   [
    "U\u0308ber",
    "\u0130stanbul",
-   "\u00fcber:i-stanbul"
+   "\u00fcber:i\u0307stanbul"
   ],
   [
    "U\u0308ber",
@@ -1427,7 +1902,57 @@
   [
    "U\u0308ber",
    "\u0939\u093f\u0928\u094d\u0926\u0940 \u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e",
-   "\u00fcber:\u0939-\u0928-\u0926-\u0935-\u0915-\u092a-\u0921-\u092f"
+   "\u00fcber:\u0939\u093f\u0928\u094d\u0926\u0940-\u0935\u093f\u0915\u093f\u092a\u0940\u0921\u093f\u092f\u093e"
+  ],
+  [
+   "U\u0308ber",
+   "\u0930\u093e\u092e",
+   "\u00fcber:\u0930\u093e\u092e"
+  ],
+  [
+   "U\u0308ber",
+   "\u0930\u0940\u092e\u093e",
+   "\u00fcber:\u0930\u0940\u092e\u093e"
+  ],
+  [
+   "U\u0308ber",
+   "\u0e01\u0e34\u0e19",
+   "\u00fcber:\u0e01\u0e34\u0e19"
+  ],
+  [
+   "U\u0308ber",
+   "\u0e01\u0e31\u0e19",
+   "\u00fcber:\u0e01\u0e31\u0e19"
+  ],
+  [
+   "U\u0308ber",
+   "\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3",
+   "\u00fcber:\u05d3\u05b8\u05bc\u05d5\u05b4\u05d3"
+  ],
+  [
+   "U\u0308ber",
+   "\u099f\u09be\u099f\u09be \u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1 Ltd",
+   "\u00fcber:\u099f\u09be\u099f\u09be-\u09b2\u09bf\u09ae\u09bf\u099f\u09c7\u09a1-ltd"
+  ],
+  [
+   "U\u0308ber",
+   "Bob \u2764\ufe0f",
+   "\u00fcber:bob"
+  ],
+  [
+   "U\u0308ber",
+   "1\ufe0f\u20e3 first",
+   "\u00fcber:1-first"
+  ],
+  [
+   "U\u0308ber",
+   "\u0628\u0898\u062a",
+   "\u00fcber:\u0628\u0898\u062a"
+  ],
+  [
+   "U\u0308ber",
+   "\u0628\u0897\u062a",
+   "\u00fcber:\u0628-\u062a"
   ],
   [
    "U\u0308ber",
@@ -1466,7 +1991,10 @@
   "HTTPServer": "HTTP_SERVER",
   "isPartOf2Things": "IS_PART_OF2_THINGS",
   "already_SNAKE_case": "ALREADY_SNAKE_CASE",
-  "\u00c9coleDe": "\u00c9COLE_DE"
+  "\u00c9coleDe": "\u00c9COLE_DE",
+  "\u092a\u093f\u0924\u093e": "\u092a\u093f\u0924\u093e",
+  "\u092a\u094b\u0924\u093e": "\u092a\u094b\u0924\u093e",
+  "\u0915\u093e\u092e \u0915\u0930\u0924\u093e \u0939\u0948!": "\u0915\u093e\u092e_\u0915\u0930\u0924\u093e_\u0939\u0948"
  },
  "canonical_entity_id": [
   [
@@ -1622,6 +2150,24 @@
    "\u00c9coleDe",
    "company:acme",
    "relation:f06b310869a60ef018ff4566"
+  ],
+  [
+   "person:jane",
+   "\u092a\u093f\u0924\u093e",
+   "company:acme",
+   "relation:b8e49173379ec987942606f9"
+  ],
+  [
+   "person:jane",
+   "\u092a\u094b\u0924\u093e",
+   "company:acme",
+   "relation:c20bb808bdb10fb43a016da9"
+  ],
+  [
+   "person:jane",
+   "\u0915\u093e\u092e \u0915\u0930\u0924\u093e \u0939\u0948!",
+   "company:acme",
+   "relation:27dc83f95a7ff69a7abdbc7c"
   ]
  ],
  "preference_id": [
@@ -1737,7 +2283,10 @@
   "HTTPServer": "HTTP_SERVER",
   "isPartOf2Things": "IS_PART_OF2_THINGS",
   "already_SNAKE_case": "ALREADY_SNAKE_CASE",
-  "\u00c9coleDe": "\u00c9COLE_DE"
+  "\u00c9coleDe": "\u00c9COLE_DE",
+  "\u092a\u093f\u0924\u093e": "\u092a\u093f\u0924\u093e",
+  "\u092a\u094b\u0924\u093e": "\u092a\u094b\u0924\u093e",
+  "\u0915\u093e\u092e \u0915\u0930\u0924\u093e \u0939\u0948!": "\u0915\u093e\u092e_\u0915\u0930\u0924\u093e_\u0939\u0948"
  },
  "nfc_ids": [
   "preference:41c480c00563cb0d2772dc72",
@@ -2829,7 +3378,12 @@
   "Apple Inc. and Microsoft Corp. compete. 3M Company too? Yes. NASA launched Apollo 11.": "4755af5f39cc3ac993fab4c1",
   "\ud83d\ude80 Rocket Labs launched from New Zealand. The Team cheered.": "3318620d93fe75c7058fc950",
   "He met She. They saw It, This! Those were Acme's. Neo4j and S3 work with GPT-4.": "d0ca301ee16916fd377532ea",
-  "The rain fell. A Storm hit Paris; Berlin, Rome: Madrid! Done?": "926e2e0443af7a1aec0beea5"
+  "The rain fell. A Storm hit Paris; Berlin, Rome: Madrid! Done?": "926e2e0443af7a1aec0beea5",
+  "# Acme Handbook\n\nAcme was founded in 2019 by Jane Doe.\nCompany Handbook\nAnn works at Acme.": "a8e4af8e260111cef200e124",
+  "Jane Doe met\nBob Smith at Acme.": "63b309d13b6549122a3aa3d8",
+  "Zoe\u0308 met Jose\u0301 Garci\u0301a at Cafe\u0301 Socie\u0301te\u0301 in Sa\u0303o Paulo. E\u0301mile Zola met Bo\u0302b Lee. Q\u1acfing Fox.": "3b67d128aff3dc91902d327c",
+  "Attendees:\r\nAnn Smith\r\nBob  Lee\fCarol\tKing": "5926862df84c66dca48c94df",
+  "Acme Report\u2028Ann works at Acme\u0085Bob Lee\u2029Initech Inc\u001cGlobex\u001dHooli\u001eSoylent\rUmbrella\u000bStark\n": "337e62b5897ce948dcacc368"
  },
  "quote_label": {
   "Entity": "Entity",
@@ -3158,6 +3712,66 @@
    "rome",
    "storm"
   ],
+  "# Acme Handbook\n\nAcme was founded in 2019 by Jane Doe.\nCompany Handbook\nAnn works at Acme.": [
+   "2019",
+   "acme",
+   "ann",
+   "company",
+   "doe",
+   "founded",
+   "handbook",
+   "jane",
+   "works"
+  ],
+  "Jane Doe met\nBob Smith at Acme.": [
+   "acme",
+   "bob",
+   "doe",
+   "jane",
+   "met",
+   "smith"
+  ],
+  "Zoe\u0308 met Jose\u0301 Garci\u0301a at Cafe\u0301 Socie\u0301te\u0301 in Sa\u0303o Paulo. E\u0301mile Zola met Bo\u0302b Lee. Q\u1acfing Fox.": [
+   "b\u00f4b",
+   "caf\u00e9",
+   "fox",
+   "garc\u00eda",
+   "ing",
+   "jos\u00e9",
+   "lee",
+   "met",
+   "paulo",
+   "q",
+   "soci\u00e9t\u00e9",
+   "s\u00e3o",
+   "zola",
+   "zo\u00eb",
+   "\u00e9mile"
+  ],
+  "Attendees:\r\nAnn Smith\r\nBob  Lee\fCarol\tKing": [
+   "ann",
+   "attendees",
+   "bob",
+   "carol",
+   "king",
+   "lee",
+   "smith"
+  ],
+  "Acme Report\u2028Ann works at Acme\u0085Bob Lee\u2029Initech Inc\u001cGlobex\u001dHooli\u001eSoylent\rUmbrella\u000bStark\n": [
+   "acme",
+   "ann",
+   "bob",
+   "globex",
+   "hooli",
+   "inc",
+   "initech",
+   "lee",
+   "report",
+   "soylent",
+   "stark",
+   "umbrella",
+   "works"
+  ],
   "Stra\u00dfe STRASSE": [
    "strasse"
   ],
@@ -3173,8 +3787,7 @@
    "\u13f0"
   ],
   "\u0130stanbul \u0131": [
-   "i",
-   "stanbul",
+   "i\u0307stanbul",
    "\u0131"
   ],
   "\ufb03 \ufb01 \ufb00": [
@@ -3189,13 +3802,19 @@
    "\u4e16\u754c",
    "\u6771\u4eac\u30bf\u30ef\u30fc"
   ],
+  "\u0930\u0940\u092e\u093e \u0915\u0939\u093e\u0901 \u0930\u0939\u0924\u0940 \u0939\u0948? \u0e01\u0e34\u0e19_\u0e01\u0e31\u0e19 \u2764\ufe0f": [
+   "\u0915\u0939\u093e\u0901",
+   "\u0930\u0939\u0924\u0940",
+   "\u0930\u0940\u092e\u093e",
+   "\u0939\u0948",
+   "\u0e01\u0e31\u0e19",
+   "\u0e01\u0e34\u0e19"
+  ],
   "\uff26\uff55\uff4c\uff4c": [
    "\uff46\uff55\uff4c\uff4c"
   ],
   "\u0939\u093f\u0928\u094d\u0926\u0940": [
-   "\u0926",
-   "\u0928",
-   "\u0939"
+   "\u0939\u093f\u0928\u094d\u0926\u0940"
   ],
   "n x y Z 3 a_b c-d": [
    "3",
@@ -3213,9 +3832,9 @@
    "\u00e5\u00e5"
   ],
   "\u0149 \u01f0 \u0390": [
-   "j",
+   "j\u030c",
    "\u02bcn",
-   "\u03b9"
+   "\u03b9\u0308\u0301"
   ]
  },
  "fold": {
@@ -3227,6 +3846,7 @@
   "\ufb03 \ufb01 \ufb00": "ffi fi ff",
   "Caf\u00e9 Cafe\u0301": "caf\u00e9 caf\u00e9",
   "\u4e16\u754c \u6771\u4eac\u30bf\u30ef\u30fc": "\u4e16\u754c \u6771\u4eac\u30bf\u30ef\u30fc",
+  "\u0930\u0940\u092e\u093e \u0915\u0939\u093e\u0901 \u0930\u0939\u0924\u0940 \u0939\u0948? \u0e01\u0e34\u0e19_\u0e01\u0e31\u0e19 \u2764\ufe0f": "\u0930\u0940\u092e\u093e \u0915\u0939\u093e\u0901 \u0930\u0939\u0924\u0940 \u0939\u0948? \u0e01\u0e34\u0e19_\u0e01\u0e31\u0e19 \u2764\ufe0f",
   "\uff26\uff55\uff4c\uff4c": "\uff46\uff55\uff4c\uff4c",
   "\u0939\u093f\u0928\u094d\u0926\u0940": "\u0939\u093f\u0928\u094d\u0926\u0940",
   "n x y Z 3 a_b c-d": "n x y z 3 a_b c-d",
@@ -4476,7 +5096,12 @@
    23,
    14,
    29,
-   17
+   17,
+   26,
+   10,
+   45,
+   13,
+   40
   ]
  },
  "extract": [
@@ -4878,6 +5503,508 @@
       "from_entity": "thing:rome",
       "type": "RELATED_TO",
       "to_entity": "thing:madrid",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "# Acme Handbook\n\nAcme was founded in 2019 by Jane Doe.\nCompany Handbook\nAnn works at Acme.",
+   "facts": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Acme Handbook",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Acme",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Jane Doe",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Company Handbook",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Ann",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:acme-handbook",
+      "type": "RELATED_TO",
+      "to_entity": "thing:acme",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:acme",
+      "type": "RELATED_TO",
+      "to_entity": "thing:jane-doe",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:company-handbook",
+      "type": "RELATED_TO",
+      "to_entity": "thing:ann",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:ann",
+      "type": "RELATED_TO",
+      "to_entity": "thing:acme",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "Jane Doe met\nBob Smith at Acme.",
+   "facts": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Jane Doe",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Bob Smith",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Acme",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:jane-doe",
+      "type": "RELATED_TO",
+      "to_entity": "thing:bob-smith",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:bob-smith",
+      "type": "RELATED_TO",
+      "to_entity": "thing:acme",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "Zoe\u0308 met Jose\u0301 Garci\u0301a at Cafe\u0301 Socie\u0301te\u0301 in Sa\u0303o Paulo. E\u0301mile Zola met Bo\u0302b Lee. Q\u1acfing Fox.",
+   "facts": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Zoe\u0308",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Jose\u0301 Garci\u0301a",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Cafe\u0301 Socie\u0301te\u0301",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Sa\u0303o Paulo",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "E\u0301mile Zola",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Bo\u0302b Lee",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Q",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Fox",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:zo\u00eb",
+      "type": "RELATED_TO",
+      "to_entity": "thing:jos\u00e9-garc\u00eda",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:jos\u00e9-garc\u00eda",
+      "type": "RELATED_TO",
+      "to_entity": "thing:caf\u00e9-soci\u00e9t\u00e9",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:caf\u00e9-soci\u00e9t\u00e9",
+      "type": "RELATED_TO",
+      "to_entity": "thing:s\u00e3o-paulo",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:\u00e9mile-zola",
+      "type": "RELATED_TO",
+      "to_entity": "thing:b\u00f4b-lee",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:q",
+      "type": "RELATED_TO",
+      "to_entity": "thing:fox",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "Attendees:\r\nAnn Smith\r\nBob  Lee\fCarol\tKing",
+   "facts": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Attendees",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Ann Smith",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Bob Lee",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Carol King",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:attendees",
+      "type": "RELATED_TO",
+      "to_entity": "thing:ann-smith",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:ann-smith",
+      "type": "RELATED_TO",
+      "to_entity": "thing:bob-lee",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:bob-lee",
+      "type": "RELATED_TO",
+      "to_entity": "thing:carol-king",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     }
+    ],
+    "preferences": [],
+    "decisions": []
+   }
+  },
+  {
+   "text": "Acme Report\u2028Ann works at Acme\u0085Bob Lee\u2029Initech Inc\u001cGlobex\u001dHooli\u001eSoylent\rUmbrella\u000bStark\n",
+   "facts": {
+    "entities": [
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Acme Report",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Ann",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Acme",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Bob Lee",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Initech Inc",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Globex",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Hooli",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Soylent",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Umbrella",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     },
+     {
+      "id": null,
+      "type": "Thing",
+      "name": "Stark",
+      "aliases": [],
+      "external_ids": {},
+      "properties": {}
+     }
+    ],
+    "relations": [
+     {
+      "id": null,
+      "from_entity": "thing:acme-report",
+      "type": "RELATED_TO",
+      "to_entity": "thing:ann",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:ann",
+      "type": "RELATED_TO",
+      "to_entity": "thing:acme",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:acme",
+      "type": "RELATED_TO",
+      "to_entity": "thing:bob-lee",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:bob-lee",
+      "type": "RELATED_TO",
+      "to_entity": "thing:initech-inc",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:initech-inc",
+      "type": "RELATED_TO",
+      "to_entity": "thing:globex",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:globex",
+      "type": "RELATED_TO",
+      "to_entity": "thing:hooli",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:hooli",
+      "type": "RELATED_TO",
+      "to_entity": "thing:soylent",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:soylent",
+      "type": "RELATED_TO",
+      "to_entity": "thing:umbrella",
+      "properties": {},
+      "event_time": null,
+      "evidence": []
+     },
+     {
+      "id": null,
+      "from_entity": "thing:umbrella",
+      "type": "RELATED_TO",
+      "to_entity": "thing:stark",
       "properties": {},
       "event_time": null,
       "evidence": []
@@ -6500,6 +7627,16 @@
     0.8666666666666667
    ],
    [
+    "\u0930\u093e\u092e",
+    "\u0930\u0940\u092e\u093e",
+    0.75
+   ],
+   [
+    "\u0930\u093e\u092e \u0915\u0941\u092e\u093e\u0930",
+    "\u0930\u093e\u092e  \u0915\u0941\u092e\u093e\u0930",
+    0.98
+   ],
+   [
     "Cafe\u0301 Ole\u0301",
     "caf\u00e9 ol\u00e9",
     0.6333333333333333
@@ -6587,6 +7724,16 @@
     0.0
    ],
    [
+    "\u0930\u093e\u092e",
+    "\u0930\u0940\u092e\u093e",
+    0.0
+   ],
+   [
+    "\u0930\u093e\u092e \u0915\u0941\u092e\u093e\u0930",
+    "\u0930\u093e\u092e  \u0915\u0941\u092e\u093e\u0930",
+    1.0
+   ],
+   [
     "Cafe\u0301 Ole\u0301",
     "caf\u00e9 ol\u00e9",
     1.0
@@ -6672,6 +7819,16 @@
     "Zo\u00eb \u00c5ngstr\u00f6m",
     "Zoe Angstrom",
     0.8666666666666667
+   ],
+   [
+    "\u0930\u093e\u092e",
+    "\u0930\u0940\u092e\u093e",
+    0.75
+   ],
+   [
+    "\u0930\u093e\u092e \u0915\u0941\u092e\u093e\u0930",
+    "\u0930\u093e\u092e  \u0915\u0941\u092e\u093e\u0930",
+    1.0
    ],
    [
     "Cafe\u0301 Ole\u0301",
@@ -8784,6 +9941,19 @@
     "updated_at": "2024-01-01T00:00:00Z",
     "relevance": null,
     "relevance_at": null
+   },
+   {
+    "id": "thing:ann-s-bakery",
+    "type": "Thing",
+    "name": "Ann's Bakery",
+    "aliases": [],
+    "external_ids": {},
+    "properties": {},
+    "source_count": 0,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z",
+    "relevance": null,
+    "relevance_at": null
    }
   ],
   "relations": [
@@ -9864,7 +11034,9 @@
      "aliases": [
       "started"
      ],
-     "synonyms": [],
+     "synonyms": [
+      "Lee's backer"
+     ],
      "certified": false,
      "from": {
       "types": []
@@ -10240,6 +11412,364 @@
      "hub_only": [],
      "note": null
     }
+   ],
+   [
+    "what is Ann Lee's employer",
+    null,
+    3,
+    {
+     "question": "what is Ann Lee's employer",
+     "verdict": "partial",
+     "terms": [
+      {
+       "term": "ann lee",
+       "status": "entity",
+       "matches": [
+        "person:ann-lee"
+       ],
+       "certified": false
+      },
+      {
+       "term": "employer",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "employer"
+     ],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "what is Ann Lee\u2019s employer",
+    null,
+    3,
+    {
+     "question": "what is Ann Lee\u2019s employer",
+     "verdict": "partial",
+     "terms": [
+      {
+       "term": "ann lee",
+       "status": "entity",
+       "matches": [
+        "person:ann-lee"
+       ],
+       "certified": false
+      },
+      {
+       "term": "employer",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "employer"
+     ],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "Doesn't Ann Lee work at Acme Corp",
+    null,
+    3,
+    {
+     "question": "Doesn't Ann Lee work at Acme Corp",
+     "verdict": "answerable",
+     "terms": [
+      {
+       "term": "ann lee",
+       "status": "entity",
+       "matches": [
+        "person:ann-lee"
+       ],
+       "certified": false
+      },
+      {
+       "term": "work",
+       "status": "relation",
+       "matches": [
+        "WORKS_AT"
+       ],
+       "certified": false
+      },
+      {
+       "term": "acme corp",
+       "status": "entity",
+       "matches": [
+        "company:acme"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "why can't Ann Lee work at Acme Corp",
+    null,
+    3,
+    {
+     "question": "why can't Ann Lee work at Acme Corp",
+     "verdict": "partial",
+     "terms": [
+      {
+       "term": "can't",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      },
+      {
+       "term": "ann lee",
+       "status": "entity",
+       "matches": [
+        "person:ann-lee"
+       ],
+       "certified": false
+      },
+      {
+       "term": "work",
+       "status": "relation",
+       "matches": [
+        "WORKS_AT"
+       ],
+       "certified": false
+      },
+      {
+       "term": "acme corp",
+       "status": "entity",
+       "matches": [
+        "company:acme"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "can't"
+     ],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "Won't Globex grow, and isn't Acme Corp's revenue what we'll see",
+    null,
+    3,
+    {
+     "question": "Won't Globex grow, and isn't Acme Corp's revenue what we'll see",
+     "verdict": "partial",
+     "terms": [
+      {
+       "term": "won't",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      },
+      {
+       "term": "globex",
+       "status": "entity",
+       "matches": [
+        "company:globex"
+       ],
+       "certified": false
+      },
+      {
+       "term": "grow",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      },
+      {
+       "term": "acme corp",
+       "status": "entity",
+       "matches": [
+        "company:acme"
+       ],
+       "certified": false
+      },
+      {
+       "term": "revenue",
+       "status": "property",
+       "matches": [
+        "revenue"
+       ],
+       "certified": false
+      },
+      {
+       "term": "see",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "won't",
+      "grow",
+      "see"
+     ],
+     "connected": false,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "Ann Lee's",
+    null,
+    3,
+    {
+     "question": "Ann Lee's",
+     "verdict": "answerable",
+     "terms": [
+      {
+       "term": "ann lee",
+       "status": "entity",
+       "matches": [
+        "person:ann-lee"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "O'Brien",
+    null,
+    3,
+    {
+     "question": "O'Brien",
+     "verdict": "not_answerable",
+     "terms": [
+      {
+       "term": "o",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      },
+      {
+       "term": "brien",
+       "status": "missing",
+       "matches": [],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "o",
+      "brien"
+     ],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "what is Ann's Bakery",
+    null,
+    3,
+    {
+     "question": "what is Ann's Bakery",
+     "verdict": "answerable",
+     "terms": [
+      {
+       "term": "ann bakery",
+       "status": "entity",
+       "matches": [
+        "thing:ann-s-bakery"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "what is Ann\u2019s Bakery",
+    null,
+    3,
+    {
+     "question": "what is Ann\u2019s Bakery",
+     "verdict": "answerable",
+     "terms": [
+      {
+       "term": "ann bakery",
+       "status": "entity",
+       "matches": [
+        "thing:ann-s-bakery"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "who is Lee's backer",
+    null,
+    3,
+    {
+     "question": "who is Lee's backer",
+     "verdict": "not_answerable",
+     "terms": [
+      {
+       "term": "lee backer",
+       "status": "schema_only",
+       "matches": [
+        "FOUNDED"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "lee backer"
+     ],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
+   ],
+   [
+    "who is Lee\u2019s backer",
+    null,
+    3,
+    {
+     "question": "who is Lee\u2019s backer",
+     "verdict": "not_answerable",
+     "terms": [
+      {
+       "term": "lee backer",
+       "status": "schema_only",
+       "matches": [
+        "FOUNDED"
+       ],
+       "certified": false
+      }
+     ],
+     "missing": [
+      "lee backer"
+     ],
+     "connected": true,
+     "hub_only": [],
+     "note": null
+    }
    ]
   ]
  },
@@ -10486,6 +12016,9 @@
         "type": "boolean"
        }
       ]
+     },
+     {
+      "name": "Division"
      }
     ],
     "relations": [
@@ -10752,6 +12285,107 @@
    {
     "error": "ValidationError"
    }
+  ]
+ ],
+ "schema_endpoints": [
+  [
+   {
+    "entities": [
+     {
+      "name": "Company",
+      "aliases": [
+       "org"
+      ]
+     }
+    ],
+    "relations": [
+     {
+      "type": "OWNS",
+      "from": {
+       "types": [
+        "org"
+       ]
+      }
+     }
+    ]
+   },
+   true
+  ],
+  [
+   {
+    "entities": [
+     {
+      "name": "Company"
+     }
+    ],
+    "relations": [
+     {
+      "type": "OWNS",
+      "from": {
+       "types": [
+        "company"
+       ]
+      }
+     }
+    ]
+   },
+   true
+  ],
+  [
+   {
+    "entities": [
+     {
+      "name": "Company"
+     }
+    ],
+    "relations": [
+     {
+      "type": "OWNS",
+      "from": {
+       "types": [
+        "Firm"
+       ]
+      }
+     }
+    ]
+   },
+   false
+  ],
+  [
+   {
+    "entities": [
+     {
+      "name": "Company"
+     }
+    ],
+    "relations": [
+     {
+      "type": "OWNS",
+      "to": {
+       "types": [
+        "Company",
+        "Firm"
+       ]
+      }
+     }
+    ]
+   },
+   false
+  ],
+  [
+   {
+    "relations": [
+     {
+      "type": "OWNS",
+      "from": {
+       "types": [
+        "Firm"
+       ]
+      }
+     }
+    ]
+   },
+   true
   ]
  ],
  "obsidian": {

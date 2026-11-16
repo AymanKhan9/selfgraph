@@ -11,17 +11,19 @@ from typing import Any
 from . import _ops, tiers
 from ._export import obsidian_vault
 from ._maintenance import inspect, scan_entities, scan_relations
-from ._serde import aware, now
+from ._serde import L_TRACE, aware, now
 from .contradiction import judge_contradictions
 from .errors import CLOSED_MESSAGE, LLM_HINT, StoreError, TransientError, ValidationError
 from .extraction.extractor import LLMExtractor
 from .extraction.prompts import check_prompts
-from .ids import _require_namespace
+from .ids import _require_namespace, decision_id
 from .insert import Insert
 from .llm.base import resolve_llm
 from .models import (
     AnswerabilityReport,
     CypherResult,
+    DecisionTrace,
+    DecisionTraceInput,
     Extraction,
     ExtractionInstructions,
     ExtractionPrompts,
@@ -72,6 +74,34 @@ _TX_RETRY_MAX_DELAY = 1.0
 _LEXICAL_NOTE = "the check is lexical; embedding seeds may still find what the missing terms ask about"
 
 _log = logging.getLogger("selfgraph")
+
+
+def _restated(
+    dec: DecisionTraceInput, stored: DecisionTrace | None, default_event_time: datetime | None
+) -> DecisionTraceInput:
+    """Merge an inserted decision over the stored one, so a restatement keeps every field it leaves out.
+
+    A None field or an empty list keeps the stored value and a given one replaces it; decisions.update clears.
+
+    @param dec (DecisionTraceInput): the decision as inserted.
+    @param stored (DecisionTrace | None): the stored trace with the same id, or None when it is new.
+    @param default_event_time (datetime | None): the insert's event_time, for a decision that names none.
+    @return (DecisionTraceInput): the decision to write; a new one without a status is completed.
+    """
+    dec = dec.model_copy(update={"event_time": dec.event_time or default_event_time})
+    if stored is None:
+        return dec if dec.status is not None else dec.model_copy(update={"status": "completed"})
+    kept = {
+        "steps": [s.relation_id for s in stored.steps],
+        "actor_entity": stored.actor_entity,
+        "summary": stored.summary,
+        "rationale": stored.rationale,
+        "outcome_entity": stored.outcome_entity,
+        "alternative_entities": stored.alternative_entities,
+        "status": stored.status,
+        "event_time": stored.event_time,
+    }
+    return dec.model_copy(update={k: v for k, v in kept.items() if getattr(dec, k) in (None, [])})
 
 
 class SelfGraph:
@@ -600,7 +630,12 @@ class SelfGraph:
                 )
 
             entities = await _ops.upsert_entities(
-                tx, ns, list(resolved.entities), evidence=list(base_evidence), created_at=created_at
+                tx,
+                ns,
+                list(resolved.entities),
+                evidence=list(base_evidence),
+                created_at=created_at,
+                schema_types=frozenset(t.name for t in active_schema.entities) if active_schema is not None else (),
             )
             relations = await _ops.upsert_relations(
                 tx,
@@ -641,11 +676,14 @@ class SelfGraph:
 
             decisions = []
             for dec in resolved.decisions:
+                tid = dec.id or decision_id(dec.actor_entity, dec.title)
+                await tx.lock_node(ns, L_TRACE, tid)
+                dec = _restated(dec, await _ops.get_trace(tx, ns, tid), default_event_time)
                 decisions.append(
                     await _ops.upsert_trace(
                         tx,
                         ns,
-                        tid=dec.id,
+                        tid=tid,
                         title=dec.title,
                         step_rel_ids=list(dec.steps),
                         actor_entity=dec.actor_entity,
@@ -654,7 +692,7 @@ class SelfGraph:
                         outcome_entity=dec.outcome_entity,
                         alternative_entities=list(dec.alternative_entities),
                         status=dec.status,
-                        event_time=dec.event_time or default_event_time,
+                        event_time=dec.event_time,
                         created_at=created_at,
                     )
                 )

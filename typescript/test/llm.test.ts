@@ -149,6 +149,23 @@ describe("LLM extraction through the AI SDK", () => {
     expect(res.warnings).toEqual([]);
   });
 
+  it("keeps a stored decision's fields when the model restates it without them", async () => {
+    let restate = false;
+    const model = mockModel((kind) => {
+      if (kind !== "decisions" || !restate) return REPLIES[kind];
+      const [dec] = (REPLIES.decisions as { decisions: object[] }).decisions;
+      return { decisions: [{ ...dec, rationale: null, status: null }] };
+    });
+    const g = open({ llm: model });
+    const text = "Soham on the Platform Team chose HydraDB over Neo4j for temporal history.";
+    const [dec] = (await g.insert.text(text, { source_id: "chat" })).decisions;
+    expect(dec!.status).toBe("completed");
+    await g.decisions.update(dec!.id, { status: "active" });
+    restate = true;
+    const [again] = (await g.insert.text(`${text} Again.`, { source_id: "notes" })).decisions;
+    expect(again).toMatchObject({ id: dec!.id, status: "active", rationale: "temporal history" });
+  });
+
   it("re-asks when a reply does not match the schema", async () => {
     let entityCalls = 0;
     const model = mockModel((kind) => {
@@ -387,6 +404,22 @@ describe("LLM extraction through the AI SDK", () => {
     const assembled = assembleExtraction([], [], [], [decision], warnings);
     expect(warnings.map((w) => w.code)).toEqual(["dropped_reserved_relation", "dropped_reserved_relation"]);
     expect([assembled.relations, assembled.decisions[0]!.steps]).toEqual([[], []]);
+  });
+
+  it("drops a relation whose endpoint name is invalid with one warning instead of failing the insert", () => {
+    const warnings: InsertWarning[] = [];
+    const facts = assembleExtraction(
+      [{ type: "Person", name: "Ann" }],
+      [{ from_name: "Bob\nLee", type: "KNOWS", to_name: "Ann" }],
+      [],
+      [],
+      warnings,
+    );
+    expect(facts.entities.map((e) => e.name)).toEqual(["Ann"]);
+    expect(facts.relations).toEqual([]);
+    expect(warnings.map((w) => w.message)).toEqual([
+      "dropped an extracted entity: entity name cannot contain control or surrogate characters",
+    ]);
   });
 
   it("uses chat completions for the openai provider with a base_url and reports a refused connection as its root cause", async () => {

@@ -145,3 +145,43 @@ def test_update_clears_named_fields_and_unlinks_cleared_references():
         run(g.decisions.list(status="zzz"))
     with pytest.raises(ValidationError, match="preference stance"):
         run(g.preferences.list(stance="zzz"))
+
+
+def test_insert_restating_a_decision_keeps_what_it_leaves_out():
+    g = fresh_graph("restate")
+    r1, r2 = seed(g)
+    title = {"title": "Select the graph database", "actor_entity": "team:core"}
+    full = {
+        **title,
+        "steps": [r1.id, r2.id],
+        "summary": "embedded wins",
+        "rationale": "needs temporal history",
+        "outcome_entity": "company:hydradb",
+        "alternative_entities": ["company:neo4j"],
+        "status": "active",
+        "event_time": "2024-03-01T00:00:00Z",
+    }
+    run(g.insert.facts({"decisions": [full]}, source_id="design"))
+    [kept] = run(g.insert.facts({"decisions": [title]}, source_id="notes")).decisions
+    assert kept == run(g.decisions.get(kept.id))
+    assert (kept.summary, kept.rationale, kept.outcome_entity, kept.alternative_entities, kept.status) == (
+        "embedded wins",
+        "needs temporal history",
+        "company:hydradb",
+        ["company:neo4j"],
+        "active",
+    )
+    assert [s.relation_id for s in kept.steps] == [r1.id, r2.id]
+    assert kept.event_time.isoformat() == "2024-03-01T00:00:00+00:00"
+    given = {"rationale": "no server", "outcome_entity": "company:neo4j", "status": "reversed", "steps": [r2.id]}
+    [changed] = run(g.insert.facts({"decisions": [{**title, **given}]})).decisions
+    assert (changed.summary, changed.rationale, changed.outcome_entity, changed.status) == (
+        "embedded wins",
+        "no server",
+        "company:neo4j",
+        "reversed",
+    )
+    assert [s.relation_id for s in changed.steps] == [r2.id]
+    [dated] = run(g.insert.facts({"decisions": [title]}, event_time="2025-01-01T00:00:00Z")).decisions
+    assert dated.event_time.isoformat() == "2025-01-01T00:00:00+00:00"
+    assert run(g.insert.facts({"decisions": [{"title": "Fresh"}]})).decisions[0].status == "completed"

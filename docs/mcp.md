@@ -182,7 +182,7 @@ process can exit, and the next call reopens it.
 
 | Python (`selfgraph.mcp.server`) | TypeScript (`@hydradb/selfgraph/mcp`) |
 |---------------------------------|---------------------------------------|
-| `configure(settings=None)`: sets the backend from `GraphSettings`, or the environment | `await configure(settings?)` |
+| `await configure(settings=None)`: sets the backend from `GraphSettings`, or the environment, and closes any open graph | `await configure(settings?)` |
 | `build_server()`: returns the server | `await buildServer()` |
 | `run_stdio(settings=None)`: configures and serves over stdio | `await runStdio(settings?)` |
 | `await close()` | `await close()` |

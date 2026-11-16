@@ -147,6 +147,50 @@ def test_export_warns_about_fields_without_a_neo4j_counterpart(caplog):
         assert key in caplog.text
 
 
+def test_export_names_every_field_it_drops_and_the_round_trip_loses(caplog):
+    schema = Schema.model_validate(
+        {
+            "name": "s",
+            "entities": [
+                {
+                    "name": "Person",
+                    "aliases": ["Human"],
+                    "synonyms": ["individual"],
+                    "certified": True,
+                    "mappings": [{"source": "crm", "table": "users"}],
+                    "definitions": [{"name": "seniority", "expression": "count(Job)"}],
+                },
+                {"name": "Company"},
+            ],
+            "relations": [
+                {
+                    "type": "OWNS",
+                    "synonyms": ["holds"],
+                    "certified": True,
+                    "from": {"types": ["Person"]},
+                    "to": {"types": ["Company"]},
+                }
+            ],
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="selfgraph"):
+        out = schema.to_neo4j_ontology()
+    assert out["node_types"][0]["aliases"] == ["Human"], "aliases are carried, so they are not a loss"
+    back = Schema.from_neo4j_ontology(out)
+    named = {part.strip() for part in caplog.text.split(":")[-1].split(",")}
+    spelled = {"certified": "certified flag"}
+    for entity, restored in zip(schema.entities, back.entities, strict=True):
+        for field in ("aliases", "synonyms", "certified", "mappings", "definitions"):
+            if getattr(entity, field) != getattr(restored, field):
+                key = f"{entity.name}.{spelled.get(field, field)}"
+                assert key in named, f"{key} was lost without being named"
+    for relation, restored in zip(schema.relations, back.relations, strict=True):
+        for field in ("aliases", "synonyms", "certified"):
+            if getattr(relation, field) != getattr(restored, field):
+                key = f"{relation.type}.{spelled.get(field, field)}"
+                assert key in named, f"{key} was lost without being named"
+
+
 def test_invalid_neo4j_ontology_and_schema_objects_raise():
     assert to_neo4j({"entities": [{"name": "Person"}]})["node_types"][0]["label"] == "Person"
     for bad in (None, [], {"entity_types": []}):

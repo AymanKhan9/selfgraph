@@ -3,10 +3,14 @@ import { judgeContradictions } from "./contradiction.js";
 import { ExtractionError, errorMessage, SelfGraphError, ValidationError } from "./errors.js";
 import { NERExtractor } from "./extraction/basic.js";
 import { LLMExtractor } from "./extraction/extractor.js";
+import * as ids from "./ids.js";
 import { comparePy, pyStrip } from "./internal/py.js";
+import { L_TRACE } from "./labels.js";
 import {
   asInput,
   type DateTimeInput,
+  DEFAULT_STATUS,
+  type DecisionTrace,
   type Evidence,
   Extraction,
   ExtractionInstructions,
@@ -15,11 +19,13 @@ import {
   type InsertWarning,
   insertWarning,
   type JsonObject,
+  type ParsedDecisionTraceInput,
   type ParsedDocument,
   type ParsedExtraction,
   type Preference,
   parseOrThrow,
   type SourceDiff,
+  type Status,
 } from "./models.js";
 import * as ops from "./ops.js";
 import type { Extractor, LLMClient } from "./protocols.js";
@@ -97,6 +103,40 @@ const TEXT_KEYS = keysOf<InsertTextOptions>({
   contradiction: true,
   replace_source: true,
 });
+
+/**
+ * Merge an inserted decision over the stored one, so a restatement keeps every field it leaves out.
+ *
+ * A null field or an empty list keeps the stored value and a given one replaces it; decisions.update clears.
+ *
+ * @param dec (ParsedDecisionTraceInput): the decision as inserted.
+ * @param stored (DecisionTrace | null): the stored trace with the same id, or null when it is new.
+ * @param defaultEventTime (Date | null): the insert's event_time, for a decision that names none.
+ * @return (ParsedDecisionTraceInput & { status: Status }): the decision to write; a new one without a status is completed.
+ */
+function restated(
+  dec: ParsedDecisionTraceInput,
+  stored: DecisionTrace | null,
+  defaultEventTime: Date | null,
+): ParsedDecisionTraceInput & { status: Status } {
+  const eventTime = dec.event_time ?? defaultEventTime;
+  if (stored === null) return { ...dec, status: dec.status ?? DEFAULT_STATUS, event_time: eventTime };
+  const list = (given: string[], kept: string[]) => (given.length > 0 ? given : kept);
+  return {
+    ...dec,
+    steps: list(
+      dec.steps,
+      stored.steps.map((s) => s.relation_id),
+    ),
+    actor_entity: dec.actor_entity ?? stored.actor_entity,
+    summary: dec.summary ?? stored.summary,
+    rationale: dec.rationale ?? stored.rationale,
+    outcome_entity: dec.outcome_entity ?? stored.outcome_entity,
+    alternative_entities: list(dec.alternative_entities, stored.alternative_entities),
+    status: dec.status ?? stored.status,
+    event_time: eventTime ?? stored.event_time,
+  };
+}
 
 export interface ExtractionSetup {
   llm: LLMClient | null;
@@ -218,7 +258,14 @@ export class Insert {
         });
       }
 
-      const entities = await ops.upsertEntities(tx, ns, resolved.entities, [...baseEvidence], createdAt);
+      const entities = await ops.upsertEntities(
+        tx,
+        ns,
+        resolved.entities,
+        [...baseEvidence],
+        createdAt,
+        new Set(activeSchema?.entities.map((t) => t.name) ?? []),
+      );
       const relations = await ops.upsertRelations(
         tx,
         ns,
@@ -258,10 +305,13 @@ export class Insert {
       }
 
       const decisions = [];
-      for (const dec of resolved.decisions) {
+      for (const given of resolved.decisions) {
+        const tid = given.id || ids.decisionId(given.actor_entity, given.title);
+        await tx.lockNode(ns, L_TRACE, tid);
+        const dec = restated(given, await ops.getTrace(tx, ns, tid), source.default_event_time);
         decisions.push(
           await ops.upsertTrace(tx, ns, {
-            tid: dec.id,
+            tid,
             title: dec.title,
             step_rel_ids: [...dec.steps],
             actor_entity: dec.actor_entity,
@@ -270,7 +320,7 @@ export class Insert {
             outcome_entity: dec.outcome_entity,
             alternative_entities: [...dec.alternative_entities],
             status: dec.status,
-            event_time: dec.event_time ?? source.default_event_time,
+            event_time: dec.event_time,
             created_at: createdAt,
           }),
         );

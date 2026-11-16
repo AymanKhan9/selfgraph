@@ -10,15 +10,56 @@ __all__ = ["expand_tokens", "grounded_terms", "schema_forms", "stem"]
 
 Tokenize = Callable[[str], set[str]]
 
+_SINGULARS = {
+    "calories": "calorie",
+    "cookies": "cookie",
+    "hoodies": "hoodie",
+    "movies": "movie",
+    "rookies": "rookie",
+    "selfies": "selfie",
+    "zombies": "zombie",
+    "quizzes": "quiz",
+    "buses": "bus",
+    "statuses": "status",
+    "status": "status",
+    "analysis": "analysis",
+    "news": "news",
+    "series": "series",
+    "species": "species",
+}
+_ES_AFTER = ("ss", "sh", "x", "zz", "tz")
+_VOWELS = "aeiou"
+
+
+def _takes_es(base: str) -> bool:
+    """Report whether a singular forms its plural with "es", so the plural loses both letters.
+
+    @param base (str): a plural without its final "es".
+    @return (bool): True after ss, sh, x, zz, or tz, and after a consonant followed by ch.
+    """
+    if base.endswith(_ES_AFTER):
+        return True
+    return base.endswith("ch") and len(base) > 2 and base[-3] not in _VOWELS
+
 
 def stem(token: str) -> str:
-    """Strip a plain plural ending so "customers" and "customer" compare equal.
+    """Strip a plural ending so "customers" and "customer", or "addresses" and "address", compare equal.
+
+    The suffix rules run in order: -ies becomes -y, -es is dropped where _takes_es says the singular takes it, and
+    any other final s is dropped unless the word ends in -ss. _SINGULARS holds the common words those rules get
+    wrong: -ie nouns that would read as -y plurals, quizzes and buses (doubled or -us stems), status and analysis
+    (singulars that end in s), and nouns that are the same in both numbers. A blanket -us / -is keep would leave
+    menus unchanged and would turn excuses into excus.
 
     @param token (str): a casefolded token.
-    @return (str): the token without a trailing plural s.
+    @return (str): the token in its singular form.
     """
+    if token in _SINGULARS:
+        return _SINGULARS[token]
     if token.endswith("ies") and len(token) > 4:
         return token[:-3] + "y"
+    if token.endswith("es") and len(token) > 4 and _takes_es(token[:-2]):
+        return token[:-2]
     if token.endswith("s") and not token.endswith("ss") and len(token) > 3:
         return token[:-1]
     return token

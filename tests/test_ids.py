@@ -1,3 +1,6 @@
+import sys
+import unicodedata
+
 import pytest
 
 from selfgraph import ids
@@ -57,3 +60,39 @@ def test_relation_types_split_camel_case():
     assert ids.normalize_rel_type("WORKS_AT") == "WORKS_AT"
     assert ids.normalize_rel_type("works at") == "WORKS_AT"
     assert ids.relation_id("a:b", "worksAt", "c:d") == ids.relation_id("a:b", "WORKS_AT", "c:d")
+
+
+def test_combining_marks_stay_in_derived_ids():
+    names = ["राम", "रीमा", "रोम", "กิน", "กัน", "কাল", "কুল", "கவி", "கவு", "דָּוִד", "דּוֹד"]
+    derived = [ids.entity_id("Person", name) for name in names]
+    assert derived == [f"person:{name}" for name in names]
+    assert ids.entity_id("City", "दिल्ली, भारत") == "city:दिल्ली-भारत"
+    assert ids.entity_id("Company", "टाटा लिमिटेड Ltd") == "company:टाटा-लिमिटेड"
+    assert ids.normalize_rel_type("पिता") == "पिता" != ids.normalize_rel_type("पोता")
+    assert ids.normalize_rel_type("काम करता है!") == "काम_करता_है"
+    assert ids.relation_id("a:b", "पिता", "c:d") != ids.relation_id("a:b", "पोता", "c:d")
+
+
+def test_names_without_combining_marks_keep_their_ids():
+    assert ids.entity_id("Person", "Zoe\u0308 A\u030angstro\u0308m") == ids.entity_id("Person", "Zoë Ångström")
+    assert ids.entity_id("Person", "Bob \U0001f600") == "person:bob"
+    assert ids.entity_id("Person", "Bob \u2764\ufe0f") == "person:bob"
+    assert ids.entity_id("Thing", "1\ufe0f\u20e3 first") == "thing:1-first"
+    assert ids.entity_id("Language", "C++") == "language:c"
+    assert ids.entity_id("Company", "Acme, Inc.") == "company:acme"
+    assert ids.normalize_rel_type("Works-At!!") == "WORKS_AT"
+
+
+def test_combining_marks_follow_one_pinned_table():
+    assert [ids._is_mark(ch) for ch in "\u093e\u0301\u0e34\U0001e94a"] == [True] * 4
+    assert [ids._is_mark(ch) for ch in "a \ufe0f\u20e3\U000e0100\u200d"] == [False] * 6
+    assert ids.entity_id("Person", "\u0628\u0898\u062a") == "person:\u0628\u0898\u062a"
+    assert ids.entity_id("Person", "\u0628\u0897\u062a") == "person:\u0628-\u062a"
+    if unicodedata.unidata_version != "15.0.0":
+        pytest.skip("the table is checked against the Unicode 15.0 data of Python 3.12")
+    marks = {
+        cp
+        for cp in range(sys.maxunicode + 1)
+        if unicodedata.category(chr(cp)) in ("Mn", "Mc") and not (0xFE00 <= cp <= 0xFE0F or 0xE0100 <= cp <= 0xE01EF)
+    }
+    assert {cp for cp in range(sys.maxunicode + 1) if ids._is_mark(chr(cp))} == marks

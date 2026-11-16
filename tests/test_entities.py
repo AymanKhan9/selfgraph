@@ -3,7 +3,7 @@ import re
 import pytest
 from helpers import create_entities, fresh_graph, new_graph, run, utc
 
-from selfgraph import ConflictError, NotFoundError, ValidationError
+from selfgraph import ConflictError, NotFoundError, ValidationError, entity_id
 from selfgraph.resources._common import encode_cursor
 
 
@@ -62,6 +62,22 @@ def test_update_rejects_unknown_options_and_type_changes_but_keeps_a_case_only_t
     run(g.entities.create("Bob", "person"))
     s = new_graph(namespace=g.namespace, schema={"entities": [{"name": "Person"}]})
     assert run(s.entities.update("person:bob", type="PERSON")).type == "Person"
+
+
+def test_insert_keeps_the_stored_type_when_only_its_case_differs():
+    g = fresh_graph("ent")
+    ibm = {"type": "Company", "name": "International Business Machines", "aliases": ["IBM"]}
+    first = run(g.insert.facts({"entities": [ibm, {"type": "COMPANY", "name": "International Business Machines"}]}))
+    assert [e.type for e in first.entities] == ["Company"]
+    again = run(g.insert.facts({"entities": [{"type": "company", "name": "International Business Machines"}]}))
+    assert (again.entities[0].type, again.entities[0].updated_at) == ("Company", first.entities[0].updated_at)
+    run(g.insert.facts({"entities": [{"type": "Company", "name": "IBM"}]}))
+    assert [(e.id, e.type) for e in run(g.entities.list()).items] == [
+        ("company:international-business-machines", "Company")
+    ]
+    run(g.entities.create("Bob", "person"))
+    s = new_graph(namespace=g.namespace, schema={"entities": [{"name": "Person"}]})
+    assert run(s.insert.facts({"entities": [{"type": "person", "name": "Bob"}]})).entities[0].type == "Person"
 
 
 def test_explicit_ids_are_canonical_on_every_input_path():
@@ -270,3 +286,37 @@ def test_every_list_rejects_a_cursor_it_did_not_write():
         for bad in ("", "AAAA", "garbage", "MQ", "MQ==\n", "cGVyc29uOmFubg", foreign):
             with pytest.raises(ValidationError, match="^invalid cursor "):
                 run(list_fn(bad))
+
+
+def test_names_that_differ_only_in_vowel_signs_stay_separate():
+    g = new_graph()
+    ram, reema = entity_id("Person", "राम"), entity_id("Person", "रीमा")
+    assert ram != reema
+    result = run(
+        g.insert.facts(
+            {
+                "entities": [
+                    {"type": "Person", "name": "राम"},
+                    {"type": "Person", "name": "रीमा"},
+                    {"type": "शहर", "name": "दिल्ली"},
+                    {"type": "व्यक्ति", "name": "सीता"},
+                    {"type": "City", "name": "Mumbai"},
+                ],
+                "relations": [
+                    {"from_entity": ram, "type": "रहता है", "to_entity": entity_id("शहर", "दिल्ली")},
+                    {"from_entity": reema, "type": "रहती है", "to_entity": "city:mumbai"},
+                ],
+            }
+        )
+    )
+    assert result.warnings == []
+    people = {e.id: e for e in run(g.entities.list(type="Person")).items}
+    assert {eid: (e.name, e.aliases) for eid, e in people.items()} == {ram: ("राम", []), reema: ("रीमा", [])}
+    assert run(g.entities.get("व्यक्ति:सीता")).type == "व्यक्ति"
+    assert {(r.from_entity, r.type, r.to_entity) for r in run(g.relations.list()).items} == {
+        (ram, "रहता_है", "शहर:दिल्ली"),
+        (reema, "रहती_है", "city:mumbai"),
+    }
+    found = run(g.retrieve("रीमा कहाँ रहती है?"))
+    assert [e.id for e in found.seeds] == [reema]
+    assert "Mumbai" in found.context and "राम" not in found.context

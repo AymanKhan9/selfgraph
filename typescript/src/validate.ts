@@ -57,7 +57,7 @@ export function hasControl(text: string): boolean {
  * @param name (string): the field name for error messages.
  * @param value (unknown): the JSON-shaped value.
  * @param depth (number): the current nesting depth.
- * @param safeInts (boolean): reject a bigint outside +/-(2^53 - 1), which JSON.parse would round.
+ * @param safeInts (boolean): reject a bigint, or an integer-valued number, outside +/-(2^53 - 1), which JSON.parse would round.
  */
 export function requireCleanJson(name: string, value: unknown, depth = 0, safeInts = true): void {
   if (depth > MAX_JSON_DEPTH) {
@@ -69,6 +69,10 @@ export function requireCleanJson(name: string, value: unknown, depth = 0, safeIn
     }
   } else if (typeof value === "bigint") {
     if (safeInts && (value > MAX_SAFE_BIGINT || value < -MAX_SAFE_BIGINT)) {
+      throw new ValidationError(`${name} integer ${value} is outside the safe range; store it as a string`);
+    }
+  } else if (typeof value === "number") {
+    if (safeInts && Number.isInteger(value) && !Number.isSafeInteger(value)) {
       throw new ValidationError(`${name} integer ${value} is outside the safe range; store it as a string`);
     }
   } else if (value instanceof Date) {
@@ -337,7 +341,7 @@ export function requireList(name: string, value: unknown): asserts value is stri
  *
  * @param name (string): the field name for the error message.
  * @param value (unknown): the value.
- * @param safeInts (boolean): reject a bigint outside +/-(2^53 - 1).
+ * @param safeInts (boolean): reject a bigint, or an integer-valued number, outside +/-(2^53 - 1).
  */
 function requireMapping(name: string, value: unknown, safeInts = true): asserts value is Record<string, unknown> {
   if (!isPlainObject(value)) throw new ValidationError(`${name} must be a mapping, got ${typeName(value)}`);
@@ -349,7 +353,7 @@ function requireMapping(name: string, value: unknown, safeInts = true): asserts 
  *
  * @param name (string): the field name for the error message.
  * @param value (unknown): the value, or null.
- * @param safeInts (boolean): reject a bigint outside +/-(2^53 - 1); stored values must round-trip through JSON.
+ * @param safeInts (boolean): reject a bigint, or an integer-valued number, outside +/-(2^53 - 1); stored values must round-trip through JSON.
  */
 export function requireJsonMapping(name: string, value: unknown, safeInts = true): void {
   if (value === null || value === undefined) return;

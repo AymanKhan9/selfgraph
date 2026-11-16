@@ -193,6 +193,15 @@ def test_prune_by_relevance_skips_unscored_items_and_filters_by_type():
     assert (by_rel.entity_ids, by_rel.relation_ids) == ([], [gadget.id])
 
 
+def test_prune_types_ignore_case_and_match_schema_aliases():
+    g = fresh_graph("mt", schema={"entities": [{"name": "Company", "aliases": ["org"]}, {"name": "Person"}]})
+    run(g.entities.create("Acme", "Company"))
+    run(g.entities.create("Ann", "Person"))
+    cutoff = _later(0.0005)
+    for types in (["Company"], ["company"], ["COMPANY"], ["org"]):
+        assert run(g.maintenance.prune(older_than=cutoff, types=types)).entity_ids == ["company:acme"]
+
+
 def test_dedupe_relations_merges_duplicates_into_the_lowest_id(caplog):
     g = fresh_graph("mt")
     t_entities(g, "a", "b")

@@ -139,6 +139,52 @@ describe("Neo4j graph schema interop", () => {
     }
   });
 
+  it("names every field it drops, and the round trip loses", async () => {
+    const schema = Schema.parse({
+      name: "s",
+      entities: [
+        {
+          name: "Person",
+          aliases: ["Human"],
+          synonyms: ["individual"],
+          certified: true,
+          mappings: [{ source: "crm", table: "users" }],
+          definitions: [{ name: "seniority", expression: "count(Job)" }],
+        },
+        { name: "Company" },
+      ],
+      relations: [
+        { type: "OWNS", synonyms: ["holds"], certified: true, from: { types: ["Person"] }, to: { types: ["Company"] } },
+      ],
+    });
+    const { result, warnings } = await captureWarnings(() => toNeo4jOntology(schema));
+    const out = result as { node_types: Array<{ aliases?: string[] }> };
+    expect(out.node_types[0]!.aliases).toEqual(["Human"]);
+    const named = new Set(
+      warnings
+        .join("\n")
+        .split(":")
+        .pop()!
+        .split(",")
+        .map((part) => part.trim()),
+    );
+    const spelled: Record<string, string> = { certified: "certified flag" };
+    const restored = fromNeo4jOntology(out as never);
+    const pairs: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+      ...schema.entities.map((entity, i) => [entity.name, entity, restored.entities[i]!] as [string, never, never]),
+      ...schema.relations.map(
+        (relation, i) => [relation.type, relation, restored.relations[i]!] as [string, never, never],
+      ),
+    ];
+    for (const [name, before, after] of pairs) {
+      for (const field of ["aliases", "synonyms", "certified", "mappings", "definitions"]) {
+        if (JSON.stringify(before[field]) === JSON.stringify(after[field])) continue;
+        const key = `${name}.${spelled[field] ?? field}`;
+        expect(named, `${key} was lost without being named`).toContain(key);
+      }
+    }
+  });
+
   it("rejects malformed input on import and export", () => {
     for (const bad of [
       [],

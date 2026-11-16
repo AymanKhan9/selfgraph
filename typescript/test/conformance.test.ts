@@ -7,20 +7,26 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { KuzuStore, SelfGraph } from "../src/index.js";
-import { conformanceStore, dump, schemaWarnings, write } from "./conformance/ts_side.js";
+import type { Schema } from "../src/schema.js";
+import { conformanceStore, dump, SUPERSEDE_SCHEMA, schemaWarnings, supersede, write } from "./conformance/ts_side.js";
 import { reachable, selectedStores, tempKuzu, uniqueNs } from "./helpers.js";
 
 const PY = process.env.SELFGRAPH_PY;
 const SCRIPT = fileURLToPath(new URL("./conformance/py_side.py", import.meta.url));
 const KUZU = tempKuzu("selfgraph-conf-");
 
-function py(cmd: "write" | "dump" | "schema", store: string, ns: string): unknown {
+function py(cmd: "write" | "dump" | "schema" | "supersede", store: string, ns: string): unknown {
   const out = execFileSync(PY!, [SCRIPT, cmd, store, ns, KUZU], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   return JSON.parse(out);
 }
 
-async function ts<T>(store: string, ns: string, fn: (g: SelfGraph) => Promise<T>): Promise<T> {
-  const graph = new SelfGraph(conformanceStore(store, KUZU), { namespace: ns });
+async function ts<T>(
+  store: string,
+  ns: string,
+  fn: (g: SelfGraph) => Promise<T>,
+  options: { schema?: Schema; contradiction?: "supersede" } = {},
+): Promise<T> {
+  const graph = new SelfGraph(conformanceStore(store, KUZU), { namespace: ns, ...options });
   try {
     await graph.initialize();
     return await fn(graph);
@@ -94,6 +100,17 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
   });
 
   for (const { name: store } of specs) {
+    it.skipIf(!live.get(store))(`${store}: superseding at both endpoints agrees in both languages`, async () => {
+      const fromPy = py("supersede", store, uniqueNs("conf_sup_py"));
+      const fromTs = await ts(store, uniqueNs("conf_sup_ts"), supersede, {
+        schema: SUPERSEDE_SCHEMA,
+        contradiction: "supersede",
+      });
+      expect(mask(fromTs)).toEqual(mask(fromPy));
+      const ended = Object.values((fromTs as { versions: Record<string, unknown[][]> }).versions).map((v) => v[0]![3]);
+      expect(ended.filter((at) => at !== null).sort()).toEqual(["2022-01-01T00:00:00Z", "2026-01-01T00:00:00Z"]);
+    });
+
     it.skipIf(!live.get(store))(
       `${store}: Python and TypeScript read, write, and agree on the same graph`,
       async () => {

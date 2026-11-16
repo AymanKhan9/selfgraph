@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 
+from .._marks import MARK_CLASS
 from ..errors import LLM_HINT
 from ..models import EntityInput, Extraction, InsertWarning, ParsedDocument
 from .extractor import _FALLBACK_TYPE, LLMExtractor, _RelOut, _WarningSink
@@ -27,7 +28,8 @@ _TYPE_MAP = {
     "LAW": "Law",
     "LANGUAGE": "Language",
 }
-_CAP = re.compile(r"[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*")
+_WORD = rf"[\w&.'\-{MARK_CLASS}]"
+_CAP = re.compile(rf"[A-Z]{_WORD}*(?:\s+[A-Z]{_WORD}*)*")
 _SENT = re.compile(r"(?<=[.!?])\s+")
 _STOPNAMES = frozenset(
     {
@@ -106,7 +108,8 @@ def _spacy_extract(nlp, text: str):
 def _regex_extract(text: str):
     entities, relations = [], []
     for sentence in _SENT.split(text):
-        raw = (m.group(0).strip().strip(".,;:!?") for m in _CAP.finditer(sentence))
+        found = (m.group(0) for line in sentence.splitlines() for m in _CAP.finditer(line))
+        raw = (" ".join(n.split()).strip(".,;:!?") for n in found)
         names = list(dict.fromkeys(n for n in raw if n and n.lower() not in _STOPNAMES))
         entities.extend(EntityInput(type=_FALLBACK_TYPE, name=name) for name in names)
         relations.extend(
@@ -144,4 +147,4 @@ class NERExtractor(_WarningSink):
         message = f"extracted without an LLM using {engine}; for model-based extraction, {LLM_HINT}"
         _log.warning("%s: %s", code, message)
         self._warnings = [InsertWarning(code=code, message=message)]
-        return LLMExtractor._assemble(entities, relations, [], [])
+        return LLMExtractor._assemble(entities, relations, [], [], self._warnings)

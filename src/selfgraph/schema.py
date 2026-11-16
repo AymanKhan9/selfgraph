@@ -118,8 +118,8 @@ class Schema(TopInputModel):
         Entity type names are compared ignoring case and relation types after normalization. A max_count must be
         at least 1, a min_count at least 0, and a min_count no greater than the max_count on the same side.
 
-        @return (Schema): the schema; raises ValueError on a duplicate name, an unknown or cyclic parent, or an
-            impossible endpoint count.
+        @return (Schema): the schema; raises ValueError on a duplicate name, an unknown or cyclic parent, an
+            endpoint type that is no entity type name or alias, or an impossible endpoint count.
         """
         names: set[str] = set()
         for i, entity in enumerate(self.entities):
@@ -154,6 +154,9 @@ class Schema(TopInputModel):
                 types.add(rtype)
             for side, end in (("from", relation.from_), ("to", relation.to)):
                 at = f"relations[{i}].{side}"
+                for j, name in enumerate(end.types if self.entities else ()):
+                    if canonical_entity_type(name, self).casefold() not in names:
+                        raise ValueError(f"{at}.types[{j}]: unknown type {name!r}")
                 if end.max_count is not None and end.max_count < 1:
                     raise ValueError(f"{at}.max_count: must be >= 1")
                 if end.min_count is not None and end.min_count < 0:
@@ -596,11 +599,12 @@ def validate_against_schema(
             continue
         canonical = normalize_rel_type(matched.type)
         for side, endpoint, eid in (("from", matched.from_, rel.from_entity), ("to", matched.to, rel.to_entity)):
+            allowed = {canonical_entity_type(t, schema) for t in endpoint.types}
             end_type = type_of_id.get(eid)
             if end_type is not None:
-                mismatch = not any(t.name in endpoint.types for t in _lineage(end_type, entities))
+                mismatch = not any(t.name in allowed for t in _lineage(end_type, entities))
             else:
-                mismatch = eid in raw_type_of_id and raw_type_of_id[eid] not in endpoint.types
+                mismatch = eid in raw_type_of_id and canonical_entity_type(raw_type_of_id[eid], schema) not in allowed
             if endpoint.types and mismatch:
                 warnings.append(
                     InsertWarning(

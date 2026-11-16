@@ -3,6 +3,7 @@ from helpers import ANN_ACME_GLOBEX, cli, fresh_graph, mcp_session, run, store_s
 
 from selfgraph import Schema, ValidationError, ids
 from selfgraph.runtime import build_graph
+from selfgraph.terms import stem
 
 ACME = ids.relation_id("person:ann", "WORKS_AT", "company:acme")
 GLOBEX = ids.relation_id("person:ann", "WORKS_AT", "company:globex")
@@ -184,6 +185,94 @@ def test_check_answerable_grounds_schema_synonyms_definitions_and_plurals():
     assert run(fresh_graph("tier").check_answerable("anything")).verdict == "not_answerable"
 
 
+def test_check_answerable_ignores_possessive_and_contraction_endings():
+    spec = {
+        "entities": [{"name": "Person"}, {"name": "Company"}],
+        "relations": [{"type": "WORKS_AT"}, {"type": "BACKS", "synonyms": ["John's employer"]}],
+    }
+    g = fresh_graph("tier", schema=spec)
+    facts = {
+        "entities": [
+            {"type": "Person", "name": "Ann"},
+            {"type": "Company", "name": "Acme"},
+            {"type": "Company", "name": "Ann's Bakery"},
+        ],
+        "relations": [works_at("acme")],
+    }
+    run(g.insert.facts(facts))
+    for question in ["What is Ann's company?", "What is Ann’s company?", "Doesn't Ann work at Acme?"]:
+        report = run(g.check_answerable(question))
+        assert (report.verdict, report.missing) == ("answerable", []), question
+    assert [t.term for t in run(g.check_answerable("What is Ann's company?")).terms] == ["ann", "company"]
+    for question in ["What is Ann's Bakery?", "What is Ann’s Bakery?"]:
+        assert [(t.term, t.status) for t in run(g.check_answerable(question)).terms] == [("ann bakery", "entity")]
+    for question in ["Who is John's employer?", "Who is John’s employer?"]:
+        assert [(t.term, t.status) for t in run(g.check_answerable(question)).terms] == [
+            ("john employer", "schema_only")
+        ]
+
+
+def test_check_answerable_keeps_wont_and_cant_whole():
+    g = fresh_graph("tier")
+    run(g.insert.facts({"entities": [{"type": "Person", "name": "Ann"}]}))
+    assert [t.term for t in run(g.check_answerable("Why can't Ann stay?")).terms] == ["can't", "ann", "stay"]
+    assert [t.term for t in run(g.check_answerable("Won’t Ann stay?")).terms] == ["won't", "ann", "stay"]
+
+
+def test_stem_singularizes_es_plurals_and_keeps_status_and_analysis():
+    singular = {
+        "addresses": "address",
+        "boxes": "box",
+        "dishes": "dish",
+        "batches": "batch",
+        "branches": "branch",
+        "statuses": "status",
+        "buses": "bus",
+        "movies": "movie",
+        "cookies": "cookie",
+        "quizzes": "quiz",
+        "buzzes": "buzz",
+        "waltzes": "waltz",
+        "menus": "menu",
+        "excuses": "excuse",
+        "abuses": "abuse",
+        "status": "status",
+        "analysis": "analysis",
+        "class": "class",
+    }
+    assert {word: stem(word) for word in singular} == singular
+    assert all(stem(word) == word for word in singular.values())
+    tables = [
+        "addresses",
+        "order_status",
+        "tax_classes",
+        "batches",
+        "analysis",
+        "movies",
+        "cookies",
+        "quizzes",
+        "businesses",
+    ]
+    assert [e.name for e in Schema.from_tables([{"name": t} for t in tables]).entities] == [
+        "Address",
+        "OrderStatus",
+        "TaxClass",
+        "Batch",
+        "Analysis",
+        "Movie",
+        "Cookie",
+        "Quiz",
+        "Business",
+    ]
+    g = fresh_graph("tier", schema={"entities": [{"name": "Address"}, {"name": "Status"}]})
+    run(
+        g.insert.facts({"entities": [{"type": "Address", "name": "12 Main St"}, {"type": "Status", "name": "Shipped"}]})
+    )
+    for question, matched in (("which addresses", "Address"), ("which statuses", "Status"), ("which status", "Status")):
+        report = run(g.check_answerable(question))
+        assert (report.verdict, [t.matches for t in report.terms]) == ("answerable", [[matched]])
+
+
 def test_synonym_seeding_finds_entities_by_a_type_synonym():
     g = fresh_graph("tier", schema=TERMS)
     run(g.insert.facts({"entities": [{"type": "Company", "name": "Acme"}, {"type": "Person", "name": "Ann"}]}))
@@ -250,12 +339,22 @@ def test_from_tables_drafts_types_properties_relations_and_mappings():
         Schema.from_tables([{}])
 
 
+def test_from_tables_maps_only_integer_sql_types_to_integer():
+    types = ["int", "INT UNSIGNED", "hugeint", "point", "interval"]
+    schema = Schema.from_tables([{"name": "t", "columns": [{"name": f"c{i}", "type": t} for i, t in enumerate(types)]}])
+    assert [p.type for p in schema.entities[0].properties] == ["integer", "integer", "integer", "string", "string"]
+
+
 def test_cli_mcp_and_settings_carry_the_level(capsys):
     g = fresh_graph("tier")
     run(g.insert.facts({"entities": [{"type": "Company", "name": "Acme"}]}))
     assert cli(g, ["retrieve", "Acme", "--seeds", "bm25"], capsys)["tiers"] == {"seeds": "bm25", "traversal": "bfs"}
-    assert build_graph(store_settings(level="light")).tiers["resolution"] == "exact"
-    assert build_graph(store_settings(max_tier="light", resolver="fuzzy")).tiers["resolution"] == "exact"
+    light = build_graph(store_settings(level="light"))
+    assert light.tiers["resolution"] == "exact"
+    run(light.close())
+    capped = build_graph(store_settings(max_tier="light", resolver="fuzzy"))
+    assert capped.tiers["resolution"] == "exact"
+    run(capped.close())
     with pytest.raises(ValidationError, match="level must be one of"):
         build_graph(store_settings(level="huge"))
     with mcp_session("tier", level="light") as srv:

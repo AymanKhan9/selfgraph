@@ -251,6 +251,11 @@ function schemaProblem(schema: z.output<typeof SchemaObject>): [Array<string | n
     }
     if (rtype !== null) types.add(rtype);
     for (const side of ["from", "to"] as const) {
+      for (const [j, name] of (schema.entities.length ? relation[side].types : []).entries()) {
+        if (!names.has(casefold(canonicalEntityType(name, schema)))) {
+          return [["relations", i, side, "types", j], `unknown type ${pyRepr(name)}`];
+        }
+      }
       const { min_count: min, max_count: max } = relation[side];
       if (max != null && max < 1) return [["relations", i, side, "max_count"], "must be >= 1"];
       if (min != null && min < 0) return [["relations", i, side, "min_count"], "must be >= 0"];
@@ -535,10 +540,11 @@ export function validateAgainstSchema(
     for (const [side, endpoint, eid] of sides) {
       const endType = typeOfId.get(eid);
       const rawType = rawTypeOfId.get(eid);
+      const allowed = new Set(endpoint.types.map((t) => canonicalEntityType(t, schema)));
       const mismatch =
         endType !== undefined
-          ? ![...lineage(endType, entities)].some((t) => endpoint.types.includes(t.name))
-          : rawType !== undefined && !endpoint.types.includes(rawType);
+          ? ![...lineage(endType, entities)].some((t) => allowed.has(t.name))
+          : rawType !== undefined && !allowed.has(canonicalEntityType(rawType, schema));
       if (endpoint.types.length && mismatch) {
         warnings.push(
           insertWarning(

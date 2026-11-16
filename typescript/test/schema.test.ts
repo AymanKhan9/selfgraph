@@ -70,6 +70,26 @@ const COMPANY = { id: "company:c", type: "Company", name: "C" };
 
 const check = (schema: unknown, facts: unknown) => validateAgainstSchema(Extraction.parse(facts), Schema.parse(schema));
 
+describe("endpoint types", () => {
+  it("resolve like entity types and are only checked when the schema has entities", () => {
+    const schema = {
+      entities: [{ name: "Person" }, { name: "Company", aliases: ["Org"] }],
+      relations: [{ type: "WORKS_AT", from: { types: ["person"] }, to: { types: ["Org"] } }],
+    };
+    const facts = {
+      entities: [
+        { type: "Person", name: "Ann" },
+        { type: "Company", name: "Acme" },
+      ],
+      relations: [{ from_entity: "person:ann", type: "WORKS_AT", to_entity: "company:acme" }],
+    };
+    expect(check(schema, facts)).toEqual([]);
+    const swapped = { ...facts, relations: [{ ...facts.relations[0]!, from_entity: "company:acme" }] };
+    expect(check(schema, swapped).map((w) => w.code)).toEqual(["endpoint_type_violation"]);
+    expect(Schema.parse({ relations: [{ type: "R", to: { types: ["Anything"] } }] }).entities).toEqual([]);
+  });
+});
+
 describe("Schema.parse and asSchema", () => {
   it("fills defaults, keeps endpoints and aliases, and passes a parsed schema or null through", () => {
     const schema = Schema.parse(SPEC);
@@ -100,6 +120,10 @@ describe("Schema.parse and asSchema", () => {
     [{ entities: [{ description: "no name" }] }, "entities[0].name: field required"],
     [{ entities: [{ name: "Person" }, { name: "person" }] }, "entities[1].name: duplicate entity type 'person'"],
     [{ entities: [{ name: "A" }, { name: "B", parent: "X" }] }, "entities[1].parent: unknown type 'X'"],
+    [
+      { entities: [{ name: "A" }], relations: [{ type: "R", to: { types: ["A", "B"] } }] },
+      "relations[0].to.types[1]: unknown type 'B'",
+    ],
     [
       {
         entities: [

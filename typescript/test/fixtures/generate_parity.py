@@ -1,13 +1,15 @@
 import json
 import sys
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel
 
-from selfgraph import _serde, ids
+from selfgraph import _marks, _serde, ids
 from selfgraph._export import obsidian_vault
 from selfgraph._maintenance import lint, relevance_score
 from selfgraph._ops import AsOf, Contradictions, version_as_of
+from selfgraph.errors import ValidationError
 from selfgraph.extraction import chunking
 from selfgraph.extraction.basic import _regex_extract
 from selfgraph.extraction.extractor import LLMExtractor, _is_noise_name, _RelOut
@@ -53,6 +55,16 @@ NAMES = [
     "Cafe\u0301 Ole\u0301",
     "Café Olé",
     "हिन्दी विकिपीडिया",
+    "राम",
+    "रीमा",
+    "กิน",
+    "กัน",
+    "דָּוִד",
+    "টাটা লিমিটেড Ltd",
+    "Bob \u2764\ufe0f",
+    "1\ufe0f\u20e3 first",
+    "\u0628\u0898\u062a",
+    "\u0628\u0897\u062a",
     "The Trial",
     "The Acme Corporation Inc",
     "snake_case_name",
@@ -89,6 +101,9 @@ REL_TYPES = [
     "isPartOf2Things",
     "already_SNAKE_case",
     "ÉcoleDe",
+    "पिता",
+    "पोता",
+    "काम करता है!",
 ]
 ENTITY_ID_INPUTS = [
     "T:X",
@@ -104,6 +119,7 @@ ENTITY_ID_INPUTS = [
     "x:",
     "person: ",
 ]
+MARK_CHARS = "a \u093e\u0301\u0e34\U0001e94a\ufe0f\u20e3\U000e0100\u200d\u0898\u0897"
 BAD_STRINGS = ["tab\there", "nul\x00", "del\x7f", "c1\x85", "lone\ud800"]
 LABELS = ["Entity", "Big Company", "has`tick", "_x9", "9x", "Ünicode"]
 
@@ -146,6 +162,13 @@ TEXTS = [
     "🚀 Rocket Labs launched from New Zealand. The Team cheered.",
     "He met She. They saw It, This! Those were Acme's. Neo4j and S3 work with GPT-4.",
     "The rain fell. A Storm hit Paris; Berlin, Rome: Madrid! Done?",
+    "# Acme Handbook\n\nAcme was founded in 2019 by Jane Doe.\nCompany Handbook\nAnn works at Acme.",
+    "Jane Doe met\nBob Smith at Acme.",
+    unicodedata.normalize(
+        "NFD", "Zoë met José García at Café Société in São Paulo. Émile Zola met Bo\u0302b Lee. Q\u1acfing Fox."
+    ),
+    "Attendees:\r\nAnn Smith\r\nBob  Lee\fCarol\tKing",
+    "Acme Report\u2028Ann works at Acme\x85Bob Lee\u2029Initech Inc\x1cGlobex\x1dHooli\x1eSoylent\rUmbrella\vStark\n",
 ]
 
 PROPS = [
@@ -333,6 +356,7 @@ FOLD_TEXTS = [
     "ﬃ ﬁ ﬀ",
     "Café Cafe\u0301",
     "世界 東京タワー",
+    "रीमा कहाँ रहती है? กิน_กัน \u2764\ufe0f",
     "Ｆｕｌｌ",
     "हिन्दी",
     "n x y Z 3 a_b c-d",
@@ -705,6 +729,7 @@ ANSWER_ENTITIES = [
     _ent("thing:bo", "Bo"),
     _ent("city:new-york", "New York", "City"),
     _ent("city:york", "York", "City"),
+    _ent("thing:ann-s-bakery", "Ann's Bakery"),
 ]
 ANSWER_RELATIONS = [
     _rel("relation:w", "person:ann-lee", "WORKS_AT", "company:acme", since=2020),
@@ -716,7 +741,7 @@ ANSWER_RELATIONS = [
 ANSWER_SCHEMA = Schema.model_validate(
     {
         "entities": [{"name": "Person", "aliases": ["employee"]}, {"name": "Company"}],
-        "relations": [{"type": "FOUNDED", "aliases": ["started"]}],
+        "relations": [{"type": "FOUNDED", "aliases": ["started"], "synonyms": ["Lee's backer"]}],
     }
 )
 ANSWER_CASES = [
@@ -731,6 +756,17 @@ ANSWER_CASES = [
     ["Annie since", None, 3],
     ["the a of", None, 3],
     ["ÉCOLE Straße 北京", None, 3],
+    ["what is Ann Lee's employer", None, 3],
+    ["what is Ann Lee’s employer", None, 3],
+    ["Doesn't Ann Lee work at Acme Corp", None, 3],
+    ["why can't Ann Lee work at Acme Corp", None, 3],
+    ["Won't Globex grow, and isn't Acme Corp's revenue what we'll see", None, 3],
+    ["Ann Lee's", None, 3],
+    ["O'Brien", None, 3],
+    ["what is Ann's Bakery", None, 3],
+    ["what is Ann’s Bakery", None, 3],
+    ["who is Lee's backer", None, 3],
+    ["who is Lee’s backer", None, 3],
 ]
 
 
@@ -790,6 +826,7 @@ OSSIE_SCHEMAS = [
             {"name": "Person", "description": "a human", "properties": [{"name": "age", "type": "integer"}]},
             {"name": "Employee", "parent": "Person", "properties": [{"name": "since", "type": "datetime"}]},
             {"name": "Company", "properties": [{"name": "meta", "type": "json"}, {"name": "ok", "type": "boolean"}]},
+            {"name": "Division"},
         ],
         "relations": [
             {
@@ -818,6 +855,29 @@ def ossie_cases():
     for raw in OSSIE_SCHEMAS:
         schema = Schema.model_validate(raw)
         out.append([raw, attempt(schema.to_ossie)])
+    return out
+
+
+ENDPOINT_SCHEMAS = [
+    {
+        "entities": [{"name": "Company", "aliases": ["org"]}],
+        "relations": [{"type": "OWNS", "from": {"types": ["org"]}}],
+    },
+    {"entities": [{"name": "Company"}], "relations": [{"type": "OWNS", "from": {"types": ["company"]}}]},
+    {"entities": [{"name": "Company"}], "relations": [{"type": "OWNS", "from": {"types": ["Firm"]}}]},
+    {"entities": [{"name": "Company"}], "relations": [{"type": "OWNS", "to": {"types": ["Company", "Firm"]}}]},
+    {"relations": [{"type": "OWNS", "from": {"types": ["Firm"]}}]},
+]
+
+
+def endpoint_cases():
+    out = []
+    for raw in ENDPOINT_SCHEMAS:
+        try:
+            Schema.model_validate(raw)
+            out.append([raw, True])
+        except ValidationError:
+            out.append([raw, False])
     return out
 
 
@@ -937,6 +997,8 @@ SIMILAR_PAIRS = [
     ("Jon Smyth", "John Smith"),
     ("New York Times", "The New York Times"),
     ("Zoë Ångström", "Zoe Angstrom"),
+    ("राम", "रीमा"),
+    ("राम कुमार", "राम  कुमार"),
     ("Cafe\u0301 Ole\u0301", "café olé"),
     ("İstanbul", "istanbul"),
     ("ΣΊΣΥΦΟΣ", "σίσυφος"),
@@ -1108,6 +1170,8 @@ def neo4j_cases():
 def main():
     out = {
         "slug": {t: attempt(ids.slug, t) for t in TYPES + NAMES},
+        "mark_ranges": _marks.MARK_RANGES,
+        "is_mark": {ch: ids._is_mark(ch) for ch in MARK_CHARS},
         "entity_id": [[t, n, attempt(ids.entity_id, t, n)] for t in TYPES for n in NAMES],
         "normalize_rel_type": {t: ids.normalize_rel_type(t) for t in REL_TYPES if t.strip(" !")},
         "canonical_entity_id": [[e, attempt(ids.canonical_entity_id, e)] for e in ENTITY_ID_INPUTS],
@@ -1214,6 +1278,7 @@ def main():
         "answerability": answerability_cases(),
         "lint": lint_case(),
         "ossie": ossie_cases(),
+        "schema_endpoints": endpoint_cases(),
         "obsidian": obsidian_case(),
         "cypher_names": [[q, list(cypher_names(q))] for q in CYPHER_NAME_QUERIES],
     }

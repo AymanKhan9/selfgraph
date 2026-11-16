@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -74,6 +74,102 @@ function suite(spec: StoreSpec) {
   afterAll(async () => {
     await graph?.close();
     await other?.close();
+  });
+
+  it("undated preference restatement keeps strength and event_time", async () => {
+    const g = fresh();
+    await g.insert.facts({
+      entities: [
+        { type: "Person", name: "Soham" },
+        { type: "Company", name: "HydraDB" },
+        { type: "Company", name: "Neo4j" },
+      ],
+    });
+    await g.insert.facts(
+      {
+        preferences: [
+          {
+            subject_entity: "person:soham",
+            key: "database",
+            value_entity: "company:hydradb",
+            strength: 0.9,
+            about_entity: "company:neo4j",
+            event_time: "2020-01-01T00:00:00+00:00",
+          },
+        ],
+      },
+      { source_id: "a" },
+    );
+    await g.insert.facts(
+      {
+        preferences: [
+          {
+            subject_entity: "person:soham",
+            key: "database",
+            value_entity: "company:hydradb",
+          },
+        ],
+      },
+      { source_id: "b" },
+    );
+    const [pref] = (await g.preferences.list()).items;
+    expect([pref!.strength, pref!.about_entity, pref!.revision]).toEqual([0.9, "company:neo4j", 1]);
+    expect(pref!.event_time).toEqual(new Date("2020-01-01T00:00:00+00:00"));
+  });
+
+  it("keeps the fields a restated decision leaves out", async () => {
+    const g = fresh();
+    await g.insert.facts({
+      entities: [
+        { id: "team:core", type: "Team", name: "Core" },
+        { id: "company:hydradb", type: "Company", name: "HydraDB" },
+        { id: "company:neo4j", type: "Company", name: "Neo4j" },
+      ],
+      relations: [
+        { id: "relation:a", from_entity: "team:core", type: "SELECTED", to_entity: "company:hydradb" },
+        { id: "relation:b", from_entity: "team:core", type: "TESTED", to_entity: "company:neo4j" },
+      ],
+    });
+    const title = { title: "Select the graph database", actor_entity: "team:core" };
+    const full = {
+      ...title,
+      steps: ["relation:a", "relation:b"],
+      summary: "embedded wins",
+      rationale: "needs temporal history",
+      outcome_entity: "company:hydradb",
+      alternative_entities: ["company:neo4j"],
+      status: "active" as const,
+      event_time: "2024-03-01T00:00:00Z",
+    };
+    await g.insert.facts({ decisions: [full] }, { source_id: "design" });
+    const [kept] = (await g.insert.facts({ decisions: [title] }, { source_id: "notes" })).decisions;
+    expect(await g.decisions.get(kept!.id)).toEqual(kept);
+    expect(kept).toMatchObject({
+      summary: "embedded wins",
+      rationale: "needs temporal history",
+      outcome_entity: "company:hydradb",
+      alternative_entities: ["company:neo4j"],
+      status: "active",
+      event_time: new Date("2024-03-01T00:00:00Z"),
+    });
+    expect(kept!.steps.map((s) => s.relation_id)).toEqual(["relation:a", "relation:b"]);
+    const given = {
+      rationale: "no server",
+      outcome_entity: "company:neo4j",
+      status: "reversed" as const,
+      steps: ["relation:b"],
+    };
+    const [changed] = (await g.insert.facts({ decisions: [{ ...title, ...given }] })).decisions;
+    expect(changed).toMatchObject({
+      summary: "embedded wins",
+      rationale: "no server",
+      outcome_entity: "company:neo4j",
+      status: "reversed",
+    });
+    expect(changed!.steps.map((s) => s.relation_id)).toEqual(["relation:b"]);
+    const [dated] = (await g.insert.facts({ decisions: [title] }, { event_time: "2025-01-01T00:00:00Z" })).decisions;
+    expect(dated!.event_time).toEqual(new Date("2025-01-01T00:00:00Z"));
+    expect((await g.insert.facts({ decisions: [{ title: "Fresh" }] })).decisions[0]!.status).toBe("completed");
   });
 
   it("canonicalizes explicit entity ids on every input path", async () => {
@@ -691,6 +787,25 @@ describe("store setup errors", () => {
     expect(uniqueLabels(neo4jRows.slice(1))).toEqual(new Set(LABELS.slice(1)));
   });
 
+  it("opens relative Kuzu paths in each store's working directory", async () => {
+    const cwd = process.cwd();
+    const dir = mkdtempSync(join(tmpdir(), "selfgraph-cwd-"));
+    const other = join(dir, "other");
+    mkdirSync(other);
+    try {
+      process.chdir(dir);
+      await using first = new SelfGraph(new KuzuStore("graph.kuzu"));
+      const entity = await first.entities.create("Jane", "Person");
+      process.chdir(other);
+      await using second = new SelfGraph(new KuzuStore("graph.kuzu"));
+      expect(await second.entities.get(entity.id)).toBeNull();
+      expect(await first.entities.get(entity.id)).toEqual(entity);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("checks store options, expands ~ in a Kuzu path, and explains lock and mmap failures", async () => {
     for (const size of [-1, 0, 1.5]) {
       expect(() => new KuzuStore("x.kuzu", { max_db_size: size })).toThrow(
@@ -742,6 +857,12 @@ describe("property values", () => {
     await expect(g.entities.create("Bob", "Person", { properties: { n: 9007199254740993n } } as never)).rejects.toThrow(
       "properties integer 9007199254740993 is outside the safe range; store it as a string",
     );
+    expect((await g.entities.create("Max", "Person", { properties: { n: 2 ** 53 - 1 } })).properties).toEqual({
+      n: 9007199254740991,
+    });
+    await expect(g.entities.create("Bob", "Person", { properties: { n: 2 ** 53 } })).rejects.toThrow(
+      "properties integer 9007199254740992 is outside the safe range; store it as a string",
+    );
     await expect(g.entities.update(e.id, { properties: { at: new Date() } } as never)).rejects.toThrow(
       "properties cannot hold Date values; use an ISO 8601 string",
     );
@@ -774,6 +895,59 @@ describe("property values", () => {
     expect((await g.entities.update(jane.id, { name: "JD" })).aliases).toEqual(["Annié", "Janie"]);
   });
 
+  it("keeps names that differ only in vowel signs as separate entities", async () => {
+    const g = open();
+    const [ram, reema] = [ids.entityId("Person", "राम"), ids.entityId("Person", "रीमा")];
+    expect([ram, reema]).toEqual(["person:राम", "person:रीमा"]);
+    const result = await g.insert.facts({
+      entities: [
+        { type: "Person", name: "राम" },
+        { type: "Person", name: "रीमा" },
+        { type: "शहर", name: "दिल्ली" },
+        { type: "City", name: "Mumbai" },
+      ],
+      relations: [
+        { from_entity: ram, type: "रहता है", to_entity: ids.entityId("शहर", "दिल्ली") },
+        { from_entity: reema, type: "रहती है", to_entity: "city:mumbai" },
+      ],
+    });
+    expect(result.warnings).toEqual([]);
+    const people = (await g.entities.list({ type: "Person" })).items;
+    expect(people.map((e) => [e.id, e.name, e.aliases])).toEqual([
+      [ram, "राम", []],
+      [reema, "रीमा", []],
+    ]);
+    const relations = (await g.relations.list()).items.map((r) => [r.from_entity, r.type, r.to_entity]);
+    expect(relations.sort()).toEqual([
+      [ram, "रहता_है", "शहर:दिल्ली"],
+      [reema, "रहती_है", "city:mumbai"],
+    ]);
+    const found = await g.retrieve("रीमा कहाँ रहती है?");
+    expect(found.seeds.map((s) => s.id)).toEqual([reema]);
+    expect(found.context).toContain("Mumbai");
+    expect(found.context).not.toContain("राम");
+  });
+
+  it("keeps the stored type on insert when only its case differs", async () => {
+    const g = open();
+    const ibm = { type: "Company", name: "International Business Machines", aliases: ["IBM"] };
+    const first = await g.insert.facts({
+      entities: [ibm, { type: "COMPANY", name: "International Business Machines" }],
+    });
+    expect(first.entities.map((e) => e.type)).toEqual(["Company"]);
+    const again = await g.insert.facts({ entities: [{ type: "company", name: "International Business Machines" }] });
+    expect(again.entities[0]?.type).toBe("Company");
+    expect(again.entities[0]?.updated_at).toEqual(first.entities[0]?.updated_at);
+    await g.insert.facts({ entities: [{ type: "Company", name: "IBM" }] });
+    expect((await g.entities.list()).items.map((e) => [e.id, e.type])).toEqual([
+      ["company:international-business-machines", "Company"],
+    ]);
+    await g.entities.create("Bob", "person");
+    const withSchema = { schema: { entities: [{ name: "Person" }] } };
+    const typed = await g.insert.facts({ entities: [{ type: "person", name: "Bob" }] }, withSchema);
+    expect(typed.entities[0]?.type).toBe("Person");
+  });
+
   it("checks entity types and ids, and keeps the stored type on a case-only update", async () => {
     const g = open();
     await expect(g.entities.create("X", "Person", { id: "company:x" })).rejects.toThrow(
@@ -787,6 +961,8 @@ describe("property values", () => {
     await expect(g.insert.facts({ entities: [{ type: "Per:son", name: "A" }] })).rejects.toThrow("cannot contain ':'");
     await expect(g.entities.create("X", "bad type!")).rejects.toThrow(/can only contain letters, digits, spaces/);
     expect((await g.entities.create("Zoë", "Café Owner_v2.1-b")).type).toBe("Café Owner_v2.1-b");
+    expect((await g.entities.create("सीता", "व्यक्ति")).id).toBe("व्यक्ति:सीता");
+    await expect(g.entities.create("X", "bad\ufe0ftype")).rejects.toThrow(/can only contain letters, digits, spaces/);
     const calls = [
       (eid: string) => g.entities.get(eid),
       (eid: string) => g.entities.delete(eid),

@@ -10,11 +10,11 @@ from .terms import _spaced, stem
 __all__ = ["from_tables"]
 
 _TYPES = (
-    (("bool",), "boolean"),
-    (("json",), "json"),
-    (("date", "time"), "datetime"),
-    (("int", "serial"), "integer"),
-    (("float", "double", "real", "numeric", "decimal", "money"), "float"),
+    (re.compile(r"bool"), "boolean"),
+    (re.compile(r"json"), "json"),
+    (re.compile(r"date|time"), "datetime"),
+    (re.compile(r"(?<![a-z])u?(?:tiny|small|medium|big|huge|byte|var)?int(?:eger|\d*)(?![a-z])|serial"), "integer"),
+    (re.compile(r"float|double|real|numeric|decimal|money"), "float"),
 )
 
 
@@ -47,8 +47,8 @@ def _property_type(sql_type: Any) -> str:
     @return (str): the property type, string when nothing closer fits.
     """
     text = str(sql_type or "").lower()
-    for needles, mapped in _TYPES:
-        if any(n in text for n in needles):
+    for pattern, mapped in _TYPES:
+        if pattern.search(text):
             return mapped
     return "string"
 

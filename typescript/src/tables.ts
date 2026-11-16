@@ -5,12 +5,12 @@ import { type ParsedSchema, Schema } from "./schema.js";
 import { spaced, stem } from "./terms.js";
 import { checkOptions, typeName } from "./validate.js";
 
-const TYPES: ReadonlyArray<readonly [readonly string[], string]> = [
-  [["bool"], "boolean"],
-  [["json"], "json"],
-  [["date", "time"], "datetime"],
-  [["int", "serial"], "integer"],
-  [["float", "double", "real", "numeric", "decimal", "money"], "float"],
+const TYPES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/bool/, "boolean"],
+  [/json/, "json"],
+  [/date|time/, "datetime"],
+  [/(?<![a-z])u?(?:tiny|small|medium|big|huge|byte|var)?int(?:eger|\d*)(?![a-z])|serial/, "integer"],
+  [/float|double|real|numeric|decimal|money/, "float"],
 ];
 const WORD = new RegExp(`[${PY_WORD_CLASS.replace("_", "")}]+`, "gu");
 
@@ -60,7 +60,7 @@ function typeNameOf(table: string): string {
  */
 function propertyType(sqlType: unknown): string {
   const text = sqlType ? pyStr(sqlType).toLowerCase() : "";
-  for (const [needles, mapped] of TYPES) if (needles.some((n) => text.includes(n))) return mapped;
+  for (const [pattern, mapped] of TYPES) if (pattern.test(text)) return mapped;
   return "string";
 }
 

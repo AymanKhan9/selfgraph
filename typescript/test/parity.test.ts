@@ -13,6 +13,7 @@ import {
   entityId,
   entityMergeId,
   evidenceId,
+  isMark,
   normalizeRelType,
   preferenceId,
   relationId,
@@ -22,6 +23,7 @@ import {
 } from "../src/ids.js";
 import { setLogger } from "../src/index.js";
 import { log } from "../src/internal/log.js";
+import { MARK_RANGES } from "../src/internal/marks.js";
 import { comparePy, pyFloatRepr, pyJsonDumps, pyRepr, utf8 } from "../src/internal/py.js";
 import { epochMicros, fromIso, jsonIso, parseIso, pyStrDate, toIso } from "../src/internal/time.js";
 import { lint, relevanceScore } from "../src/maintenance.js";
@@ -103,6 +105,8 @@ describe("ids match Python byte for byte", () => {
       ).toEqual(expected);
     }
     for (const [input, expected] of Object.entries(fx.quote_label)) expect(quoteLabel(input)).toBe(expected);
+    expect(MARK_RANGES).toBe(fx.mark_ranges);
+    for (const [ch, expected] of Object.entries(fx.is_mark)) expect(isMark(ch), JSON.stringify(ch)).toBe(expected);
     expect(() => quoteLabel("   ")).toThrow();
   });
 });
@@ -485,6 +489,12 @@ describe("answerability, readiness lint, exports, and Cypher advice match Python
     );
     expect(Object.keys(vault)).toEqual(Object.keys(o.vault));
     expect(vault).toEqual(o.vault);
+  });
+
+  it("accepts and rejects schema endpoint types identically", () => {
+    for (const [raw, expected] of fx.schema_endpoints as Array<[unknown, boolean]>) {
+      expect(Schema.safeParse(raw).success, JSON.stringify(raw)).toBe(expected);
+    }
   });
 
   it("reads Cypher labels, types, and name literals identically", () => {

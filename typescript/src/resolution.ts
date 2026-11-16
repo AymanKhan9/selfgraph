@@ -10,6 +10,7 @@ import { L_ENTITY, L_EVIDENCE, L_MERGE, L_MERGE_ENTRY, L_SOURCE_VERSION, L_TRACE
 import { type LLMArg, resolveLlm } from "./llm/index.js";
 import { scanLiveMerges } from "./maintenance.js";
 import {
+  DEFAULT_STATUS,
   type DecisionTrace,
   DecisionTraceInput,
   type Entity,
@@ -146,7 +147,6 @@ export function nameSimilarity(a: string, b: string): number {
 }
 
 const DIGITS = /\p{Nd}+/gu;
-const WORD = /[\p{L}\p{N}]+/gu;
 
 /**
  * Collect the tokens that tell apart otherwise similar names: digit runs, single-letter words, and generations.
@@ -168,7 +168,7 @@ function distinguishers(tokens: string[]): [string[], string[], string[]] {
  * @return (string[]): the folded letter and digit runs, in order.
  */
 function words(name: string): string[] {
-  return [...folded(name).matchAll(WORD)].map((m) => m[0]);
+  return ids.wordRuns(folded(name));
 }
 
 /**
@@ -1399,7 +1399,7 @@ export async function unmerge(runner: Runner, ns: string, mergeId: string): Prom
       rationale: back.rationale,
       outcome_entity: back.outcome_entity,
       alternative_entities: back.alternative_entities,
-      status: back.status,
+      status: back.status ?? DEFAULT_STATUS,
       event_time: back.event_time,
       created_at: at,
     });

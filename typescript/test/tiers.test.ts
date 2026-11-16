@@ -13,6 +13,7 @@ import {
   ValidationError,
 } from "../src/index.js";
 import { callTool, close as closeMcp, configure as configureMcp } from "../src/mcp.js";
+import { stem } from "../src/terms.js";
 import { buildCli, forEachStore, freshGraphs, runCli, type StoreSpec, tempKuzu, uniqueNs, worksAt } from "./helpers.js";
 
 const ACME = ids.relationId("person:ann", "WORKS_AT", "company:acme");
@@ -224,6 +225,42 @@ function suite(spec: StoreSpec): void {
     expect((await open().checkAnswerable("anything")).verdict).toBe("not_answerable");
   });
 
+  it("check_answerable ignores possessive and contraction endings", async () => {
+    const spec: Schema = {
+      entities: [{ name: "Person" }, { name: "Company" }],
+      relations: [{ type: "WORKS_AT" }, { type: "BACKS", synonyms: ["John's employer"] }],
+    };
+    const g = open({ schema: spec });
+    await g.insert.facts({
+      entities: [
+        { type: "Person", name: "Ann" },
+        { type: "Company", name: "Acme" },
+        { type: "Company", name: "Ann's Bakery" },
+      ],
+      relations: [worksAt("person:ann", "company:acme")],
+    });
+    for (const question of ["What is Ann's company?", "What is Ann’s company?", "Doesn't Ann work at Acme?"]) {
+      const report = await g.checkAnswerable(question);
+      expect([report.verdict, report.missing], question).toEqual(["answerable", []]);
+    }
+    expect((await g.checkAnswerable("What is Ann's company?")).terms.map((t) => t.term)).toEqual(["ann", "company"]);
+    for (const question of ["What is Ann's Bakery?", "What is Ann’s Bakery?"]) {
+      const terms = (await g.checkAnswerable(question)).terms;
+      expect(terms.map((t) => [t.term, t.status])).toEqual([["ann bakery", "entity"]]);
+    }
+    for (const question of ["Who is John's employer?", "Who is John’s employer?"]) {
+      const terms = (await g.checkAnswerable(question)).terms;
+      expect(terms.map((t) => [t.term, t.status])).toEqual([["john employer", "schema_only"]]);
+    }
+  });
+
+  it("check_answerable keeps won't and can't whole", async () => {
+    const g = open();
+    await g.insert.facts({ entities: [{ type: "Person", name: "Ann" }] });
+    expect((await g.checkAnswerable("Why can't Ann stay?")).terms.map((t) => t.term)).toEqual(["can't", "ann", "stay"]);
+    expect((await g.checkAnswerable("Won’t Ann stay?")).terms.map((t) => t.term)).toEqual(["won't", "ann", "stay"]);
+  });
+
   it("synonym seeding finds entities by a type synonym", async () => {
     const g = open({ schema: TERMS });
     await g.insert.facts({
@@ -259,6 +296,70 @@ function suite(spec: StoreSpec): void {
     expect(embedder.calls).toHaveLength(calls + 1);
     expect(embedder.calls.at(-1)).toEqual(["feline"]);
     expect(() => open({ embedder: {} as never })).toThrow(/embedder must have an embed method/);
+  });
+
+  it("stem singularizes -es plurals and keeps status and analysis", async () => {
+    const singular: Record<string, string> = {
+      addresses: "address",
+      boxes: "box",
+      dishes: "dish",
+      batches: "batch",
+      branches: "branch",
+      statuses: "status",
+      buses: "bus",
+      movies: "movie",
+      cookies: "cookie",
+      quizzes: "quiz",
+      buzzes: "buzz",
+      waltzes: "waltz",
+      menus: "menu",
+      excuses: "excuse",
+      abuses: "abuse",
+      status: "status",
+      analysis: "analysis",
+      class: "class",
+    };
+    for (const [word, expected] of Object.entries(singular)) {
+      expect([word, stem(word)]).toEqual([word, expected]);
+      expect(stem(expected)).toBe(expected);
+    }
+    const tables = [
+      "addresses",
+      "order_status",
+      "tax_classes",
+      "batches",
+      "analysis",
+      "movies",
+      "cookies",
+      "quizzes",
+      "businesses",
+    ];
+    expect(fromTables(tables.map((name) => ({ name }))).entities.map((e) => e.name)).toEqual([
+      "Address",
+      "OrderStatus",
+      "TaxClass",
+      "Batch",
+      "Analysis",
+      "Movie",
+      "Cookie",
+      "Quiz",
+      "Business",
+    ]);
+    const g = open({ schema: { entities: [{ name: "Address" }, { name: "Status" }] } });
+    await g.insert.facts({
+      entities: [
+        { type: "Address", name: "12 Main St" },
+        { type: "Status", name: "Shipped" },
+      ],
+    });
+    for (const [question, matched] of [
+      ["which addresses", "Address"],
+      ["which statuses", "Status"],
+      ["which status", "Status"],
+    ]) {
+      const report = await g.checkAnswerable(question!);
+      expect([report.verdict, report.terms.map((t) => t.matches)]).toEqual(["answerable", [[matched]]]);
+    }
   });
 
   it("fromTables drafts types, properties, relations, and mappings", async () => {
@@ -304,6 +405,18 @@ function suite(spec: StoreSpec): void {
     );
     expect(() => fromTables([{}])).toThrow(/each table needs a name/);
     expect(() => fromTables({} as never)).toThrow(/tables must be a list of table mappings/);
+  });
+
+  it("fromTables maps only integer SQL types to integer", () => {
+    const types = ["int", "INT UNSIGNED", "hugeint", "point", "interval"];
+    const schema = fromTables([{ name: "t", columns: types.map((type, i) => ({ name: `c${i}`, type })) }]);
+    expect(schema.entities[0]!.properties.map((p) => p.type)).toEqual([
+      "integer",
+      "integer",
+      "integer",
+      "string",
+      "string",
+    ]);
   });
 }
 

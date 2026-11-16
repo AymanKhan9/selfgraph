@@ -1,7 +1,7 @@
 # Retrieval
 
 `retrieve` answers a query with context from the graph, ready to pass to a model.
-There are no embeddings: seeding is lexical.
+Seeding is lexical by default; a caller-supplied `embedder=` adds an optional embeddings seed tier.
 
 ```python
 result = await graph.retrieve("who runs Acme and what did they acquire")

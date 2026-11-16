@@ -677,7 +677,7 @@ class DecisionTraceInput(InputModel):
     rationale: str | None = None
     outcome_entity: str | None = None
     alternative_entities: list[str] = Field(default_factory=list)
-    status: Status = "completed"
+    status: Status | None = None
     event_time: datetime | None = None
 
 

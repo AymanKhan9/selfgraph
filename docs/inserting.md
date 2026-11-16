@@ -233,7 +233,10 @@ Properties and metadata hold JSON values.
 - Keys in `properties`, `set_properties`, and `metadata` cannot be empty or
   whitespace (`properties keys cannot be empty or whitespace`).
 - An integer outside +/-(2^53 - 1) raises `ValidationError` ("store it as a
-  string").
+  string"). TypeScript applies that to any integer-valued number, so an
+  exponent-written value such as `1e16` is rejected there, while Python accepts
+  it as a float. JavaScript has a single number type, so the two SDKs cannot
+  agree on every exponent-written value.
 - A `datetime` (`Date` in TypeScript) is rejected. Store ISO 8601 text.
 - A `None` (`null`) value removes that key from a stored entity, relation, or
   preference. It is never stored on a new one.
@@ -252,6 +255,10 @@ Text is split into chunks of up to 512 tokens with a 64-token overlap. Without
 or `chunk_text` raises `ValidationError`. Without `overlap_tokens` the overlap is
 `min(64, max_tokens // 4)`, so a small `max_tokens` works on its own.
 `count_tokens` uses the tokenizer when installed and estimates otherwise.
+tiktoken downloads `cl100k_base` on first use. When that load fails, for example
+with no network, SelfGraph logs one warning on the `selfgraph` logger and
+estimates for the rest of the process. Set `TIKTOKEN_CACHE_DIR` to a directory
+holding the cached encoding to run offline.
 
 ## Unknown keys
 

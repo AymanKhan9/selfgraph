@@ -10,6 +10,8 @@ export const NON_ASCII = /[\u0080-\uffff]/;
 const WS_RUN = new RegExp(`[${PY_WS_CLASS}]+`, "gu");
 const WS_LEAD = new RegExp(`^[${PY_WS_CLASS}]+`, "u");
 const WS_TRAIL = new RegExp(`[${PY_WS_CLASS}]+$`, "u");
+// biome-ignore lint/suspicious/noControlCharactersInRegex: Python counts these control characters as line breaks
+const LINE_BREAK = /\r\n|[\n\v\f\r\x1c-\x1e\x85\u2028\u2029]/u;
 const NON_PRINTABLE = /[\p{C}\p{Z}]/u;
 
 /**
@@ -38,6 +40,18 @@ export function pyStrip(s: string, chars?: string): string {
  */
 export function pySplit(s: string): string[] {
   return s.split(WS_RUN).filter((part) => part.length > 0);
+}
+
+/**
+ * Split text at every line boundary Python's str.splitlines() honours, dropping a final empty line.
+ *
+ * @param s (string): the text to split.
+ * @return (string[]): the lines, without their line breaks.
+ */
+export function pySplitLines(s: string): string[] {
+  const lines = s.split(LINE_BREAK);
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
 }
 
 /**

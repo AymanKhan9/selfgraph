@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import json
@@ -41,6 +42,7 @@ __all__ = ["configure", "close", "build_server", "run_stdio", "TOOLS"]
 
 _settings: GraphSettings | None = None
 _graph: SelfGraph | None = None
+_opening: asyncio.Future[SelfGraph] | None = None
 
 _WRITE_CLAUSE = re.compile(
     r"\b(CREATE|INSERT|MERGE|DELETE|DETACH|SET|REMOVE|DROP|ALTER|RENAME|TRUNCATE|FOREACH|COPY|LOAD|IMPORT|"
@@ -126,44 +128,84 @@ class _Unset:
 _UNSET: Any = _Unset()
 
 
-def configure(settings: GraphSettings | None = None) -> None:
-    """Set the backend for the tools and drop any cached graph.
+async def configure(settings: GraphSettings | None = None) -> None:
+    """Set the backend for the tools, closing any cached or pending graph.
 
     @param settings (GraphSettings | None): the backend settings, or None to read the environment.
+    @return (None): nothing.
     """
-    global _settings, _graph
+    global _settings
     _settings = settings or settings_from_env()
-    _graph = None
+    await close()
 
 
 async def close() -> None:
     """Close the cached graph, if one is open; the next tool call reopens it.
 
+    A graph still opening is cancelled and awaited, and closed if it finished opening.
+
     @return (None): nothing.
     """
-    global _graph
+    global _graph, _opening
     graph, _graph = _graph, None
+    opening, _opening = _opening, None
+    if opening is not None:
+        if not opening.done():
+            opening.cancel()
+        await asyncio.wait([opening])
+        if _opened(opening):
+            await opening.result().close()
     if graph is not None:
         await graph.close()
+
+
+def _opened(opening: asyncio.Future[SelfGraph]) -> bool:
+    """Report whether a pending open finished with a graph.
+
+    @param opening (asyncio.Future[SelfGraph]): the pending open.
+    @return (bool): True when it finished and produced a graph.
+    """
+    return opening.done() and not opening.cancelled() and opening.exception() is None
+
+
+async def _open_graph() -> SelfGraph:
+    """Build and initialise a graph from the current settings.
+
+    @return (SelfGraph): the initialised graph.
+    """
+    graph = build_graph(_settings)  # type: ignore[arg-type]
+    try:
+        await graph.initialize()
+    except BaseException:
+        await graph.close()
+        raise
+    return graph
 
 
 async def _graph_handle() -> SelfGraph:
     """Return the shared graph, opening and initialising it on first use.
 
-    No lock is taken: an MCP server runs one event loop, so at worst a rare
-    concurrent first call builds a second graph and the first assignment wins.
+    Concurrent first calls share one open, so the store is initialised once.
 
     @return (SelfGraph): the shared, initialised graph.
     """
-    global _graph
-    if _graph is None:
+    global _graph, _opening, _settings
+    if _graph is not None:
+        return _graph
+    if _opening is None:
         if _settings is None:
-            configure()
-        graph = build_graph(_settings)  # type: ignore[arg-type]
-        await graph.initialize()
-        if _graph is None:
-            _graph = graph
-    return _graph
+            _settings = settings_from_env()
+        _opening = asyncio.ensure_future(_open_graph())
+    opening = _opening
+    try:
+        graph = await asyncio.shield(opening)
+    except BaseException:
+        if _opening is opening and opening.done() and not _opened(opening):
+            _opening = None
+        raise
+    if _opening is opening:
+        _graph, _opening = graph, None
+    return graph
 
 
 async def get_schema(format: Literal["selfgraph", "neo4j", "ossie"] = "selfgraph") -> dict[str, Any] | None:
@@ -945,5 +987,5 @@ def run_stdio(settings: GraphSettings | None = None) -> None:
 
     @param settings (GraphSettings | None): the backend settings, or None to read the environment.
     """
-    configure(check_settings(settings or settings_from_env()))
+    asyncio.run(configure(check_settings(settings or settings_from_env())))
     build_server().run()

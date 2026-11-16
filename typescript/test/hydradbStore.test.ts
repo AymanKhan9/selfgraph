@@ -1,6 +1,6 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { type GraphStore, StoreError } from "../src/index.js";
+import { type GraphStore, HydraDBStore, StoreError } from "../src/index.js";
 import { forEachStore, type StoreSpec, uniqueNs } from "./helpers.js";
 
 const props = (ns: string, id: string) => ({ id, ns, name: id });
@@ -64,3 +64,25 @@ function suite(spec: StoreSpec) {
 }
 
 await forEachStore("HydraDB write queue", suite);
+
+describe("HydraDB write queue failure", () => {
+  it("rejects the transaction without an unhandled rejection when a queued write fails", async () => {
+    const store = new HydraDBStore("bolt://127.0.0.1:1", { auth: ["neo4j", "unused"] });
+    const queue = store as unknown as { exec: (query: string, params?: unknown) => Promise<unknown> };
+    queue.exec = (query) =>
+      query.includes("SET n:Source") ? Promise.reject(new StoreError("write failed")) : Promise.resolve({ rows: [] });
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", record);
+    try {
+      await expect(store.transaction((tx) => tx.upsertNode("ns", "Source", "x:s", props("ns", "x:s")))).rejects.toThrow(
+        "write failed",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", record);
+      await store.close();
+    }
+  });
+});

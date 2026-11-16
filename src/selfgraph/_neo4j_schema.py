@@ -241,7 +241,8 @@ def _export_type(label: str, spec: Any, scope: str, constraints: list, dropped: 
     @param spec (Any): the EntityType or RelationType; aliases are kept as an extra aliases key when present.
     @param scope (str): "node_type" or "relationship_type".
     @param constraints (list): the running constraints, extended with one per required property.
-    @param dropped (list[str]): the running list of dropped fields, extended with each json-typed property.
+    @param dropped (list[str]): the running list of dropped fields, extended with each json-typed property and each
+        field Neo4j has no counterpart for.
     @return (dict[str, Any]): the Neo4j type.
     """
     out: dict[str, Any] = {"label": label, "description": spec.description or ""}
@@ -254,6 +255,14 @@ def _export_type(label: str, spec: Any, scope: str, constraints: list, dropped: 
         {"type": "EXISTENCE", "property_names": [p.name], scope: label} for p in spec.properties if p.required
     )
     dropped.extend(f"{label}.{p.name} json type (exported as STRING)" for p in spec.properties if p.type == "json")
+    for field, value in (
+        ("synonyms", spec.synonyms),
+        ("mappings", getattr(spec, "mappings", None)),
+        ("definitions", getattr(spec, "definitions", None)),
+        ("certified flag", spec.certified),
+    ):
+        if value:
+            dropped.append(f"{label}.{field}")
     return out
 
 

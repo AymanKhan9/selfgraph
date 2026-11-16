@@ -208,7 +208,7 @@ def mcp_session(prefix: str = "mcp", **over) -> Iterator[Any]:
 
     run(srv.close())
     over.setdefault("namespace", unique_ns(prefix))
-    srv.configure(store_settings(**over))
+    run(srv.configure(store_settings(**over)))
     try:
         yield srv
     finally:

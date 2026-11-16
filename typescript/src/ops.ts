@@ -138,6 +138,18 @@ const MAX_ID_BYTES = 1024;
 
 export const cleanText = (s: string): string => pyStrip(ids.normalizeText(s));
 
+/**
+ * The key entity type filters compare on: the cleaned type, through canonical when given, case-folded.
+ *
+ * @param etype (string): the entity type.
+ * @param canonical ((type: string) => string | undefined): maps a type to its schema type name, or undefined for no schema.
+ * @return (string): the comparison key.
+ */
+export function entityTypeKey(etype: string, canonical?: (type: string) => string): string {
+  const clean = cleanText(etype);
+  return casefold(canonical ? canonical(clean) : clean);
+}
+
 const idOf = (props: Props): string => props.id as string;
 
 /**
@@ -205,7 +217,7 @@ export function validateEntityIdentity(eid: unknown, type: unknown, name: unknow
   if (hasControl(name) || hasControl(type)) {
     throw new ValidationError("entity type and name cannot contain control or surrogate characters");
   }
-  if (!/^[\p{L}\p{N} _.-]*$/u.test(type)) {
+  if (![...type].every((ch) => /[\p{L}\p{N} _.-]/u.test(ch) || ids.isMark(ch))) {
     throw new ValidationError(
       `entity type ${pyRepr(type)} can only contain letters, digits, spaces, '_', '-', and '.'`,
     );
@@ -827,7 +839,7 @@ export async function validateFacts(
   for (const dec of facts.decisions) {
     validateOwnId("decision", dec.id);
     requireDatetime("decision event_time", dec.event_time);
-    requireChoice("decision status", dec.status, STATUSES);
+    if (dec.status !== null) requireChoice("decision status", dec.status, STATUSES);
     requireStr("decision title", dec.title);
     requireOptionalText("decision summary", dec.summary);
     requireOptionalText("decision rationale", dec.rationale);
@@ -852,12 +864,15 @@ export async function getEntity(runner: Runner, ns: string, eid: string): Promis
  * Insert-semantics upsert of many entities: keep stored names, record new surface forms as aliases, merge the rest.
  *
  * Entities are read and written in batches; a repeated id merges into the earlier input, as sequential upserts would.
+ * A stored entity keeps its type when an input spells it with other case or spacing, unless the input's type is a
+ * schema type name.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param ents (readonly ParsedEntityInput[]): the entities to upsert, in order.
  * @param evidence (Evidence[]): evidence recorded for every entity.
  * @param createdAt (Date): the timestamp for the created and updated fields.
+ * @param schemaTypes (ReadonlySet<string>): the schema's entity type names, which a stored entity's type may adopt.
  * @return (Entity[]): each input's stored entity, in input order.
  */
 export async function upsertEntities(
@@ -866,6 +881,7 @@ export async function upsertEntities(
   ents: readonly ParsedEntityInput[],
   evidence: Evidence[],
   createdAt: Date,
+  schemaTypes: ReadonlySet<string> = new Set(),
 ): Promise<Entity[]> {
   const keyed = ents.map((ent) => {
     const etype = cleanText(ent.type);
@@ -888,7 +904,8 @@ export async function upsertEntities(
   const current = new Map(stored);
   const writes = new Map<string, Props>();
   const out: Entity[] = [];
-  for (const { eid, etype, ename, ent } of keyed) {
+  for (const { eid, etype: given, ename, ent } of keyed) {
+    let etype = given;
     const prev = current.get(eid);
     const sources = (prev?.source_count ?? 0) + takeGained(gained, eid);
     let props: Props;
@@ -906,6 +923,7 @@ export async function upsertEntities(
         updated_at: createdAt,
       });
     } else {
+      if (!schemaTypes.has(etype)) etype = prev.type;
       const aliases = aliasList(prev.name, [...prev.aliases, ...ent.aliases, ename]);
       const externalIds = { ...prev.external_ids, ...ent.external_ids };
       const properties = mergeProps(prev.properties, ent.properties);
@@ -1138,10 +1156,7 @@ export async function listEntities(
       await runner.matchNodes(ns, L_ENTITY, { equals, skip: args.skip, limit: args.limit, id_gt: args.after })
     ).map(decodeEntity);
   }
-  const key = (etype: string): string => {
-    const clean = cleanText(etype);
-    return casefold(args.canonical ? args.canonical(clean) : clean);
-  };
+  const key = (etype: string): string => entityTypeKey(etype, args.canonical);
   const wanted = key(args.type);
   const found: Props[] = [];
   let read = 0;
@@ -1675,6 +1690,23 @@ export interface RelationCap {
 export const effectiveTime = (version: Relation | Preference | DecisionTrace): Date =>
   version.event_time ?? version.created_at;
 
+/**
+ * Pick the event_time for an upsert of an existing version.
+ *
+ * A write that does not name a time keeps the stored time when the version is still current, matching
+ * updateRelation. A reassertion of a retired version with no named time leaves event_time unset so the
+ * effective time is the write's creation time.
+ *
+ * @param named (Date | null): the time named on this write, after applying the insert default.
+ * @param stored (Date | null): the current version's event_time.
+ * @param keepStored (boolean): true when the stored version is current and should keep its time.
+ * @return (Date | null): the event_time to store.
+ */
+const restatedEventTime = (named: Date | null, stored: Date | null, keepStored: boolean): Date | null => {
+  if (named !== null) return named;
+  return keepStored ? stored : null;
+};
+
 type Slot = readonly [string, string, string];
 type Rank = readonly [number, number, number];
 
@@ -1701,6 +1733,7 @@ function compareRanked(a: readonly [Rank, string], b: readonly [Rank, string]): 
 export class Contradictions {
   private readonly groups = new Map<string, Map<string, Rank>>();
   private readonly past = new Map<string, Map<string, Rank>>();
+  private readonly ended = new Map<string, [string, Date]>();
   private readonly where = new Map<string, Set<string>>();
   private readonly times = new Map<string, Date>();
   private readonly order = new Map<string, number>();
@@ -1723,6 +1756,9 @@ export class Contradictions {
   ) {
     for (const rel of history) {
       this.times.set(rel.id, effectiveTime(rel));
+      if (rel.invalidated_by !== null && rel.invalidated_at !== null) {
+        this.ended.set(rel.id, [rel.invalidated_by, rel.invalidated_at]);
+      }
       for (const [slot] of this.slots(rel.type, rel.from_entity, rel.to_entity)) {
         const key = JSON.stringify(slot);
         this.past.set(key, (this.past.get(key) ?? new Map<string, Rank>()).set(rel.id, rankOf(rel)));
@@ -1758,6 +1794,14 @@ export class Contradictions {
     this.times.set(rid, effective);
     const keys = this.where.get(rid) ?? new Set<string>();
     this.where.set(rid, keys.add(key));
+  }
+
+  private newer(facts: ReadonlyMap<string, Rank>, rid: string): Array<[Rank, string]> {
+    const mine: [Rank, string] = [facts.get(rid)!, rid];
+    return [...facts]
+      .map(([o, r]) => [r, o] as [Rank, string])
+      .filter((pair) => compareRanked(pair, mine) > 0)
+      .sort(compareRanked);
   }
 
   private drop(rid: string): void {
@@ -1836,20 +1880,27 @@ export class Contradictions {
    * current with a "certified_kept" warning. A retired relation is invalidated by the fact that displaced it in time
    * order, the max_count-th newer fact at the endpoint with retired history counted, at
    * that fact's effective time. Each retired relation gets one warning: "contradiction_out_of_order" when it was
-   * written by this write after that fact was current, else "relation_superseded".
+   * written by this write after that fact was current, else "relation_superseded". A relation retired by an
+   * earlier write whose invalidating fact is no longer the max_count-th newer one, because this write added a fact
+   * in between, is returned with its corrected invalidation and no warning; the caller writes that as a new
+   * revision of it.
    *
    * @return ([Map<string, [string, Date]>, InsertWarning[]]): each retired relation id with the id that invalidated it and when, and the warnings.
    */
   settle(): [Map<string, [string, Date]>, InsertWarning[]] {
     const retired = new Map<string, [string, Date]>();
-    const warnings: InsertWarning[] = [];
+    const why = new Map<string, [string, number, string]>();
+    const slots: Array<InsertWarning | string> = [];
     for (const [key, limit] of this.dirty) {
       const group = this.groups.get(key) ?? new Map<string, Rank>();
+      const facts = new Map([...(this.past.get(key) ?? []), ...group]);
       const ranked = [...group.keys()].sort((a, b) => compareRanked([group.get(b)!, b], [group.get(a)!, a]));
       const [canonical, side, endpoint] = JSON.parse(key) as [string, string, string];
-      for (const old of ranked.slice(limit)) {
+      for (const old of ranked) {
+        const newer = this.newer(facts, old);
+        if (newer.length < limit) continue;
         if (this.certified.has(old)) {
-          warnings.push(
+          slots.push(
             insertWarning(
               "certified_kept",
               `relation ${old} is certified, so it stays current beside newer ${canonical} relations at ${side} ` +
@@ -1858,33 +1909,52 @@ export class Contradictions {
           );
           continue;
         }
-        const facts = new Map([...(this.past.get(key) ?? []), ...group]);
-        const mine: [Rank, string] = [facts.get(old)!, old];
-        const newer = [...facts]
-          .map(([o, r]) => [r, o] as [Rank, string])
-          .filter((pair) => compareRanked(pair, mine) > 0)
-          .sort(compareRanked);
         const by = newer[limit - 1]![1];
-        retired.set(old, [by, this.times.get(by)!]);
-        this.drop(old);
-        if ((this.order.get(by) ?? 0) < (this.order.get(old) ?? 0)) {
-          const keeper = ranked[limit - 1]!;
-          warnings.push(
-            insertWarning(
-              "contradiction_out_of_order",
-              `relation ${old} is older than current ${canonical} relation ${keeper} at ${side} entity ${endpoint}, ` +
-                `so ${keeper} stays current`,
-            ),
-          );
-        } else {
-          warnings.push(
-            insertWarning(
-              "relation_superseded",
-              `relation ${old} was superseded by ${by}, a newer ${canonical} relation at ${side} entity ${endpoint} ` +
-                `(max_count ${limit})`,
-            ),
-          );
+        const at = this.times.get(by)!;
+        if (!retired.has(old)) slots.push(old);
+        if (!retired.has(old) || at.getTime() < retired.get(old)![1].getTime()) {
+          retired.set(old, [by, at]);
+          why.set(old, [key, limit, ranked.length >= limit ? ranked[limit - 1]! : by]);
         }
+      }
+      for (const rid of this.past.get(key)?.keys() ?? []) {
+        const newer = this.newer(facts, rid);
+        const ended = retired.get(rid) ?? this.ended.get(rid);
+        if (ended === undefined || newer.length < limit) continue;
+        const by = newer[limit - 1]![1];
+        const at = this.times.get(by)!;
+        if ((by !== ended[0] || at.getTime() !== ended[1].getTime()) && (facts.has(ended[0]) || at < ended[1])) {
+          retired.set(rid, [by, at]);
+          this.ended.set(rid, [by, at]);
+        }
+      }
+    }
+    const warnings: InsertWarning[] = [];
+    for (const slot of slots) {
+      if (typeof slot !== "string") {
+        warnings.push(slot);
+        continue;
+      }
+      const [by] = retired.get(slot)!;
+      const [key, limit, keeper] = why.get(slot)!;
+      const [canonical, side, endpoint] = JSON.parse(key) as [string, string, string];
+      this.drop(slot);
+      if ((this.order.get(by) ?? 0) < (this.order.get(slot) ?? 0)) {
+        warnings.push(
+          insertWarning(
+            "contradiction_out_of_order",
+            `relation ${slot} is older than current ${canonical} relation ${keeper} at ${side} entity ${endpoint}, ` +
+              `so ${keeper} stays current`,
+          ),
+        );
+      } else {
+        warnings.push(
+          insertWarning(
+            "relation_superseded",
+            `relation ${slot} was superseded by ${by}, a newer ${canonical} relation at ${side} entity ${endpoint} ` +
+              `(max_count ${limit})`,
+          ),
+        );
       }
     }
     this.dirty.clear();
@@ -1899,14 +1969,14 @@ export class Contradictions {
  * @param ns (string): the namespace.
  * @param caps (ReadonlyMap<string, RelationCap>): the max_count limits by normalized relation type and alias.
  * @param ends (Iterable<readonly [string, string, string]>): (normalized type, source id, destination id) of each write.
- * @return ([Map<string, EdgeRow>, Relation[]]): each current relation's edge row by id, in read order, and the newest version of each relation a contradiction retired there.
+ * @return ([Map<string, EdgeRow>, Map<string, EdgeRow>]): each current relation's edge row by id, in read order, and the newest version of each relation a contradiction retired there by id.
  */
 async function constrainedCurrent(
   runner: Runner,
   ns: string,
   caps: ReadonlyMap<string, RelationCap>,
   ends: Iterable<readonly [string, string, string]>,
-): Promise<[Map<string, EdgeRow>, Relation[]]> {
+): Promise<[Map<string, EdgeRow>, Map<string, EdgeRow>]> {
   const found = new Map<string, EdgeRow>();
   const seen = new Set<string>();
   for (const [rtype, fromEntity, toEntity] of ends) {
@@ -1926,7 +1996,7 @@ async function constrainedCurrent(
   const rows = [...found.values()];
   return [
     new Map(rows.filter((e) => e.props.is_current).map((e) => [idOf(e.props), e])),
-    rows.filter((e) => !e.props.is_current && e.props.invalidated_at).map(relationOf),
+    new Map(rows.filter((e) => !e.props.is_current && e.props.invalidated_at).map((e) => [idOf(e.props), e])),
   ];
 }
 
@@ -1965,23 +2035,27 @@ export async function requireMaxCount(
 /**
  * Mark a relation version as no longer current because a newer relation superseded it.
  *
- * @param edge (EdgeRow): the current edge row.
+ * A version that was already retired takes a new revision instead, copying its content, so a known_at read from before this write still sees the earlier retirement.
+ *
+ * @param edge (EdgeRow): the edge row, current or already retired.
  * @param by (string): the id of the relation that superseded it.
  * @param at (Date): the superseding relation's effective time.
  * @param known (Date): when the retirement is written, for reads with known_at.
  * @return (EdgeRow): the edge row with its version retired.
  */
 function retiredEdge(edge: EdgeRow, by: string, at: Date, known: Date): EdgeRow {
-  return {
-    ...edge,
-    props: {
-      ...edge.props,
-      is_current: false,
-      invalidated_at: toIso(at),
-      invalidated_by: by,
-      invalidated_known_at: toIso(known),
-    },
+  const props: Record<string, unknown> = {
+    ...edge.props,
+    is_current: false,
+    invalidated_at: toIso(at),
+    invalidated_by: by,
+    invalidated_known_at: toIso(known),
   };
+  if (!edge.props.is_current) {
+    props.revision = (edge.props.revision as number) + 1;
+    props.created_at = toIso(known);
+  }
+  return { ...edge, props };
 }
 
 export interface ContradictionOptions {
@@ -2008,7 +2082,13 @@ async function contradictionCheck(
   const { contradiction = "off", caps } = options;
   if (contradiction === "off" || !caps?.size) return [null, new Map()];
   const [existing, history] = await constrainedCurrent(runner, ns, caps, ends);
-  return [new Contradictions(caps, contradiction, [...existing.values()].map(relationOf), history), existing];
+  const tracker = new Contradictions(
+    caps,
+    contradiction,
+    [...existing.values()].map(relationOf),
+    [...history.values()].map(relationOf),
+  );
+  return [tracker, new Map([...history, ...existing])];
 }
 
 /**
@@ -2146,12 +2226,13 @@ export async function upsertRelations(
   const retires = new Map<string, readonly [string, Props]>();
   const out: Array<readonly [string, number, Relation]> = [];
   for (const { rid, rtype, rel } of keyed) {
-    const eventTime = rel.event_time || defaultEventTime;
-    const effective = eventTime ?? createdAt;
+    const named = rel.event_time ?? defaultEventTime ?? null;
     let edge = current.get(rid);
     let props: Props;
     let write = true;
+    let eventTime: Date | null;
     if (edge === undefined) {
+      eventTime = named;
       props = encodeRelationProps({
         ns,
         id: rid,
@@ -2166,6 +2247,8 @@ export async function upsertRelations(
     } else {
       requireSameEnds(rid, [edge.from_id, edge.type, edge.to_id], [rel.from_entity, rtype, rel.to_entity]);
       const prev = relationOf(edge);
+      eventTime = restatedEventTime(named, prev.event_time, prev.is_current);
+      const effective = eventTime ?? createdAt;
       const sources = prev.source_count + takeGained(gained, rid);
       const mergedProperties = mergeProps(prev.properties, rel.properties);
       const reassert =
@@ -2950,7 +3033,7 @@ export async function upsertPreference(
   validateStrength(pref.strength);
   validateOwnId("preference", pref.id);
   const pid = pref.id || ids.preferenceId(pref.subject_entity, pref.stance, pref.key, pref.value_entity);
-  const eventTime = pref.event_time || defaultEventTime;
+  const named = pref.event_time ?? defaultEventTime ?? null;
   await requirePreferenceRefs(runner, ns, pref);
   const profileId = await ensureProfile(runner, ns, pref.subject_entity, createdAt);
 
@@ -2968,6 +3051,9 @@ export async function upsertPreference(
         "these identify the preference and are immutable; create a new preference to change them",
     );
   }
+  const eventTime = current === null ? named : restatedEventTime(named, current.event_time, true);
+  const strength = current === null || pref.strength != null ? pref.strength : current.strength;
+  const aboutEntity = current === null || pref.about_entity != null ? pref.about_entity : current.about_entity;
   const mergedProps = mergeProps(current?.properties ?? null, pref.properties);
   const props = encodePreferenceProps({
     ns,
@@ -2975,8 +3061,8 @@ export async function upsertPreference(
     revision: current === null ? 1 : current.revision + 1,
     subject_entity: pref.subject_entity,
     key: ids.normalizeText(pref.key),
-    about_entity: pref.about_entity,
-    strength: pref.strength,
+    about_entity: aboutEntity ?? null,
+    strength: strength ?? null,
     properties: mergedProps,
     event_time: eventTime,
     created_at: createdAt,
@@ -2985,8 +3071,8 @@ export async function upsertPreference(
 
   if (current !== null) {
     const unchanged =
-      current.strength === pref.strength &&
-      current.about_entity === pref.about_entity &&
+      current.strength === strength &&
+      current.about_entity === aboutEntity &&
       deepEqual(current.properties, mergedProps) &&
       toIso(current.event_time) === toIso(eventTime);
     if (unchanged) return current;

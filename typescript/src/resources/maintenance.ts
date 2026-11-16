@@ -6,6 +6,7 @@ import { jsonIso, toIso } from "../internal/time.js";
 import * as m from "../maintenance.js";
 import type { DateTimeInput, DecayResult, DedupeGroup, DedupeResult, PruneResult, Relation } from "../models.js";
 import * as ops from "../ops.js";
+import { canonicalEntityType } from "../schema.js";
 import { checkOptions, keysOf, parseTime, requireBool, requireList } from "../validate.js";
 import { Resource } from "./common.js";
 
@@ -125,7 +126,7 @@ export class Maintenance extends Resource {
    *
    * Every given criterion must hold. An item never scored by decay has no relevance and never matches min_relevance. types narrows the entities to these entity types and relation_types the relations to these relation types; neither is a criterion on its own. Given only one of them, the other kind is not matched directly, so types alone removes no relation except those of a removed entity, and relation_types alone removes no entity. Removal goes through the normal deletes, so a removed entity takes its relations, evidence, preferences, and decisions with it; those cascaded relations are listed too. Only current relations are matched: a relation a contradiction invalidated stays as history unless its entity is removed, which deletes every version. Removal runs in batches of up to 1000 ids per transaction. A certified relation, and each entity it connects, is kept and listed in certified unless include_certified is set. merge_ids lists the live merge records a removed entity takes with it, whose unmerge is then lost.
    *
-   * @param options (PruneOptions): min_relevance, older_than (at most one minute ahead), types (entity types), relation_types, include_certified (false by default), and dry_run (true by default).
+   * @param options (PruneOptions): min_relevance, older_than (at most one minute ahead), types (entity types, ignoring letter case; with a schema, an alias matches its type), relation_types, include_certified (false by default), and dry_run (true by default).
    * @return (PruneResult): the entity and relation ids removed, or that would be, the certified relations kept, the merge records lost, and delete counts (no deleted block on a dry run); with min_relevance and nothing scored yet, a note says to run decay first.
    */
   async prune(options: PruneOptions = {}): Promise<PruneResult> {
@@ -146,7 +147,9 @@ export class Maintenance extends Resource {
       throw new ValidationError("prune needs min_relevance or older_than; types and relation_types only narrow them");
     }
     const narrowed = types !== null || relTypes !== null;
-    const entityTypes = narrowed ? new Set((types ?? []).map(ops.cleanText)) : null;
+    const schema = this.graph.schema;
+    const typeKey = (etype: string): string => ops.entityTypeKey(etype, (type) => canonicalEntityType(type, schema));
+    const entityTypes = narrowed ? new Set((types ?? []).map(typeKey)) : null;
     const relationTypes = narrowed ? new Set((relTypes ?? []).map(normalizeRelType)) : null;
     const matches = (
       relevance: number | null,
@@ -169,7 +172,9 @@ export class Maintenance extends Resource {
         ] as const,
     );
     const hit = new Set(
-      entities.filter((e) => matches(e.relevance, [e.created_at, e.updated_at], e.type, entityTypes)).map((e) => e.id),
+      entities
+        .filter((e) => matches(e.relevance, [e.created_at, e.updated_at], typeKey(e.type), entityTypes))
+        .map((e) => e.id),
     );
     const hitRels = new Set(
       relations

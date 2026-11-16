@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
+from ._marks import MARK_CLASS
 from .errors import ValidationError
 
 __all__ = [
@@ -147,8 +148,9 @@ def _require_no_control(label: str, value: str) -> None:
 
 _WS = re.compile(r"\s+")
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_PUNCT = re.compile(r"[^\w\s]+")
-_NON_IDENT = re.compile(r"[^\w]+")
+_MARK = re.compile(f"[{MARK_CLASS}]")
+_PUNCT = re.compile(rf"[^\w\s{MARK_CLASS}]+")
+_NON_IDENT = re.compile(rf"[^\w{MARK_CLASS}]+")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _ENTITY_SUFFIXES = frozenset(
     {
@@ -214,6 +216,29 @@ def _hash(*parts: str | None) -> str:
     return h.hexdigest()
 
 
+def _is_mark(ch: str) -> bool:
+    """Report whether a character is a combining mark that is part of the word it follows.
+
+    Vowel signs, viramas, nuktas, and tone marks are general category Mn or Mc and have no composed form for NFC
+    to fold them into. The marks are the ones of Unicode 15.0, listed in _marks so that every Python and Node
+    version classifies them alike; the variation selectors are left out, so an emoji presentation selector still
+    drops with its emoji.
+
+    @param ch (str): one character.
+    @return (bool): True for a nonspacing or spacing mark other than a variation selector.
+    """
+    return _MARK.match(ch) is not None
+
+
+def _word_runs(text: str) -> list[str]:
+    """Split text into its runs of letters and digits, each with the combining marks written on them.
+
+    @param text (str): the text to split.
+    @return (list[str]): the runs, in order; underscore, whitespace, punctuation, and symbols separate them.
+    """
+    return [run for run in _NON_IDENT.sub("_", text).split("_") if run]
+
+
 def normalize_text(value: str) -> str:
     """NFC-normalize text so an id, its stored field, and a filter argument share one byte form.
 
@@ -235,7 +260,8 @@ def slug(text: str) -> str:
 def _canonical_name(type: str, name: str) -> str:
     """Canonicalise an entity name so cross-document surface variants collapse.
 
-    Drops punctuation for every type; for organisation-like types it also drops a
+    Drops punctuation for every type and keeps combining marks, so a name written with
+    vowel signs keeps them; for organisation-like types it also drops a
     leading article and trailing corporate suffixes, so "Acme", "Acme, Inc." and
     "The Acme Corporation" resolve to one id while a Work "The Trial" stays distinct
     from "Trial".

@@ -50,10 +50,14 @@ A derived id is `type:name`, both slugged:
 
 - NFC-normalized, lowercased, and stripped;
 - whitespace runs turned into one hyphen;
-- punctuation, symbols, and emoji dropped from the name.
+- punctuation, symbols, and emoji dropped from the name. Combining marks, such
+  as the vowel signs of Devanagari or Thai, are part of the word and stay. Both
+  SDKs take them from one fixed list, the marks of Unicode 15.0, so an id does
+  not depend on the Python or Node version.
 
 So `Acme` and `ACME` share an id, `Bob 😀` and `Bob` both become `person:bob`,
-and type `Per son` gives `per-son:bob`. A name with nothing else left keeps its
+type `Per son` gives `per-son:bob`, and `राम` and `रीमा` stay apart as
+`person:राम` and `person:रीमा`. A name with nothing else left keeps its
 symbols (`person:😀`).
 
 **Organization names.** For organization-like types, the name also drops a
@@ -87,8 +91,8 @@ join them, reference the explicit id or set `resolver="default"` (see
 [Entity resolution](resolution.md)).
 
 **Allowed and reserved types.** An entity type may contain only letters (any
-script), digits, spaces, `_`, `-`, and `.`. These are reserved in any case and
-raise `ValidationError`:
+script, with their combining marks), digits, spaces, `_`, `-`, and `.`. These
+are reserved in any case and raise `ValidationError`:
 
 - entity types `Entity`, `Profile`, `DecisionTrace`, `DecisionStep`, `Source`,
   `SourceVersion`, `Chunk`, `Evidence`, `EntityMerge`, and `EntityMergeEntry`;
@@ -214,8 +218,12 @@ await graph.decisions.create(
   retired. They are kept in order and not checked to form a path.
 - `status` defaults to `"completed"`.
 - The derived id hashes the actor and title. A second `create` with both equal
-  raises `ConflictError`, while `insert.facts` updates the stored decision.
-  Use distinct titles or an explicit `id` for distinct decisions.
+  raises `ConflictError`, while `insert.facts` and `insert.text` update the
+  stored decision. Use distinct titles or an explicit `id` for distinct decisions.
+- An insert that restates a stored decision keeps every field it leaves out. A
+  missing field or an empty `steps` or `alternative_entities` keeps the stored
+  value, and a given one replaces it. A new decision without a `status` is
+  `"completed"`. To clear a field, use `decisions.update(clear=[...])`.
 
 ## Listing and iterating
 

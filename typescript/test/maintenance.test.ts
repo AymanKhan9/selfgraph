@@ -318,6 +318,16 @@ function suite(spec: StoreSpec) {
     const byRel = await g.maintenance.prune({ older_than: cutoff, relation_types: ["gadget"] });
     expect([byRel.entity_ids, byRel.relation_ids]).toEqual([[], [gadget.id]]);
   });
+
+  it("matches types ignoring letter case and through schema aliases", async () => {
+    const g = open({ schema: { entities: [{ name: "Company", aliases: ["org"] }, { name: "Person" }] } });
+    await g.entities.create("Acme", "Company");
+    await g.entities.create("Ann", "Person");
+    const cutoff = later(0.0005);
+    for (const types of [["Company"], ["company"], ["COMPANY"], ["org"]]) {
+      expect((await g.maintenance.prune({ older_than: cutoff, types })).entity_ids).toEqual(["company:acme"]);
+    }
+  });
 }
 
 await forEachStore("maintenance", suite);

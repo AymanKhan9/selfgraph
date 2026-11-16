@@ -386,7 +386,7 @@ export const DecisionTraceInput = z.strictObject({
   rationale: optString,
   outcome_entity: optString,
   alternative_entities: z.array(z.string()).default([]),
-  status: Status.default(DEFAULT_STATUS),
+  status: nullable(Status),
   event_time: optDate,
 });
 export type DecisionTraceInput = DeepReadonly<z.input<typeof DecisionTraceInput>>;

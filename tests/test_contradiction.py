@@ -404,3 +404,74 @@ def test_a_retired_fact_is_invalidated_by_the_next_newer_one():
             return {r.id for r in run(g.retrieve("Ann", as_of=utc(year, month))).subgraph.relations}
 
         assert (valid(2019, 6), valid(2020, 6), valid(2023)) == ({ACME}, {initech}, {GLOBEX})
+
+
+def test_a_late_middle_fact_corrects_the_retired_history_it_lands_in():
+    rels = [works_at("acme", 2020), works_at("globex", 2022), works_at("initech", 2024)]
+    globex = ids.relation_id("person:ann", "WORKS_AT", "company:globex")
+    initech = ids.relation_id("person:ann", "WORKS_AT", "company:initech")
+    orders = [(rels[0], rels[1], rels[2]), (rels[0], rels[2], rels[1]), (rels[2], rels[0], rels[1])]
+    for order in orders:
+        g = graph(contradiction="supersede")
+        for rel in order:
+            insert(g, rel)
+        acme, mid = (run(g.relations.versions(rid))[0] for rid in (ACME, globex))
+        assert (acme.invalidated_by, acme.invalidated_at) == (globex, utc(2022))
+        assert (mid.invalidated_by, mid.invalidated_at) == (initech, utc(2024))
+
+        def valid(year, g=g):
+            return {r.id for r in run(g.retrieve("Ann", as_of=utc(year, 6))).subgraph.relations}
+
+        assert (valid(2021), valid(2023), valid(2025)) == ({ACME}, {globex}, {initech})
+
+
+def test_a_relation_ends_at_the_earliest_endpoint_that_displaces_it_in_any_order():
+    spec = {
+        "entities": [{"name": "Person"}, {"name": "Company"}],
+        "relations": [
+            {
+                "type": "WORKS_AT",
+                "from": {"types": ["Person"], "max_count": 1},
+                "to": {"types": ["Company"], "max_count": 1},
+            }
+        ],
+    }
+    people = [{"type": t, "name": n} for t, n in (("Person", "Ann"), ("Person", "Bob"), ("Company", "Acme"))]
+    people += [{"type": "Company", "name": n} for n in ("Globex", "Initech")]
+
+    def link(person, company, year):
+        return {
+            "from_entity": f"person:{person}",
+            "type": "WORKS_AT",
+            "to_entity": f"company:{company}",
+            "event_time": utc(year),
+        }
+
+    rels = [
+        link("ann", "acme", 2020),
+        link("ann", "globex", 2024),
+        link("bob", "acme", 2022),
+        link("ann", "initech", 2026),
+    ]
+    ann_acme, bob_acme = (ids.relation_id(f"person:{p}", "WORKS_AT", "company:acme") for p in ("ann", "bob"))
+    for batches in ([[0], [1], [2]], [[2], [1], [0]], [[0], [3], [1, 2]], [[0, 1, 2, 3]]):
+        g = fresh_graph("contra", schema=spec, contradiction="supersede")
+        run(g.insert.facts({"entities": people}))
+        for batch in batches:
+            insert(g, *(rels[i] for i in batch))
+        ended = run(g.relations.versions(ann_acme))[0]
+        assert (ended.invalidated_by, ended.invalidated_at) == (bob_acme, utc(2022)), batches
+        assert run(g.relations.get(bob_acme)).is_current
+
+
+def test_undated_restatement_keeps_event_time_and_supersede_order():
+    g = graph(contradiction="supersede")
+    insert(g, works_at("acme", 2020), source_id="a")
+    insert(g, works_at("acme"), source_id="b")
+    current = run(g.relations.get(ACME))
+    assert (current.event_time, current.revision, current.source_count) == (utc(2020), 1, 2)
+    res = insert(g, works_at("globex", 2022), source_id="c")
+    assert [w.code for w in res.warnings] == ["relation_superseded"]
+    assert [r.id for r in run(g.relations.list()).items] == [GLOBEX]
+    as_of = {r.id for r in run(g.retrieve("Ann", as_of=utc(2023))).subgraph.relations}
+    assert as_of == {GLOBEX}

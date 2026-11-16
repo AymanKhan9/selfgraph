@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from functools import partial
 
 from .. import _maintenance as _m
 from .. import _ops
@@ -10,6 +11,7 @@ from .._serde import now as _now
 from ..errors import DECAY_HINT, ValidationError
 from ..ids import normalize_rel_type
 from ..models import DecayResult, DedupeGroup, DedupeResult, DeleteResult, PruneResult, Relation
+from ..schema import canonical_entity_type
 from ._common import Resource
 
 __all__ = ["Maintenance"]
@@ -119,7 +121,8 @@ class Maintenance(Resource):
         @param min_relevance (float | None): remove items whose relevance is below this.
         @param older_than (datetime | str | None): remove items whose latest timestamp is before this; at most one
             minute ahead.
-        @param types (list[str] | None): only consider entities of these types.
+        @param types (list[str] | None): only consider entities of these types, ignoring letter case; with a
+            schema, an alias matches its type.
         @param relation_types (list[str] | None): only consider relations of these types.
         @param include_certified (bool): also remove certified relations and the entities they connect.
         @param dry_run (bool): list what would be removed without removing it; True by default.
@@ -141,7 +144,8 @@ class Maintenance(Resource):
         if min_relevance is None and older_than is None:
             raise ValidationError("prune needs min_relevance or older_than; types and relation_types only narrow them")
         narrowed = types is not None or relation_types is not None
-        entity_types = {_ops._clean_text(t) for t in types or ()} if narrowed else None
+        type_key = partial(_ops.entity_type_key, canonical=partial(canonical_entity_type, schema=self._c.schema))
+        entity_types = {type_key(t) for t in types or ()} if narrowed else None
         rel_types = {normalize_rel_type(t) for t in relation_types or ()} if narrowed else None
 
         def matches(relevance: float | None, stamps: tuple, kind: str, allowed: set[str] | None) -> bool:
@@ -155,7 +159,9 @@ class Maintenance(Resource):
         reader = await self._c._reader()
         relations = await _m.scan_relations(reader, ns)
         entities = await _m.scan_entities(reader, ns)
-        hit = {e.id for e in entities if matches(e.relevance, (e.created_at, e.updated_at), e.type, entity_types)}
+        hit = {
+            e.id for e in entities if matches(e.relevance, (e.created_at, e.updated_at), type_key(e.type), entity_types)
+        }
         hit_rels = {r.id for r in relations if matches(r.relevance, (r.created_at, r.event_time), r.type, rel_types)}
         certified = [] if include_certified else [r for r in relations if r.certified_at is not None]
         kept = {r.id for r in certified}

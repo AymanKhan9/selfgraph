@@ -298,11 +298,26 @@ export function toNeo4jOntology(raw: Schema | ParsedSchema): Obj {
   const constraints: Obj[] = [];
   const jsonTyped = (label: string, properties: Spec[]) =>
     properties.filter((p) => p.type === "json").map((p) => `${label}.${p.name} json type (exported as STRING)`);
+  const lostFields = (
+    label: string,
+    spec: { synonyms: string[]; certified: boolean; mappings?: unknown[]; definitions?: unknown[] },
+  ) => {
+    const fields: Array<[string, unknown]> = [
+      ["synonyms", spec.synonyms],
+      ["mappings", spec.mappings],
+      ["definitions", spec.definitions],
+      ["certified flag", spec.certified],
+    ];
+    for (const [field, value] of fields) {
+      if (Array.isArray(value) ? value.length > 0 : value === true) dropped.push(`${label}.${field}`);
+    }
+  };
   for (const e of schema.entities) {
     nodes.push(exportType(e.name, e.description, e.aliases, e.properties));
     constraints.push(...existence(e.properties, "node_type", e.name));
     if (e.parent != null) dropped.push(`${e.name}.parent`);
     dropped.push(...jsonTyped(e.name, e.properties));
+    lostFields(e.name, e);
   }
   for (const r of schema.relations) {
     rels.push(exportType(r.type, r.description, r.aliases, r.properties));
@@ -315,6 +330,7 @@ export function toNeo4jOntology(raw: Schema | ParsedSchema): Obj {
       if (r[side].min_count != null || r[side].max_count != null) dropped.push(`${r.type}.${side} cardinality`);
     }
     dropped.push(...jsonTyped(r.type, r.properties));
+    lostFields(r.type, r);
   }
   if (dropped.length) log(`neo4j ontology: no Neo4j counterpart for: ${dropped.join(", ")}`);
   return { node_types: nodes, relationship_types: rels, patterns, constraints };

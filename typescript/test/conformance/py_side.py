@@ -1,10 +1,11 @@
 import asyncio
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timezone
 
-from selfgraph import EvidenceInput, Extraction, Schema, SelfGraph, ValidationError, ids
+from selfgraph import EvidenceInput, Extraction, Schema, SelfGraph, ValidationError, _serde, ids
 from selfgraph.retrieval import _tokens
 from selfgraph.runtime import to_jsonable
 from selfgraph.schema import validate_against_schema
@@ -42,11 +43,15 @@ TABLES = [
             {"name": "is_void", "type": "BOOLEAN"},
             {"name": "payload", "type": "jsonb"},
             {"name": "qty", "type": "smallint"},
+            {"name": "pickup", "type": "point"},
+            {"name": "lead_time", "type": "interval"},
             {"name": "untyped"},
         ],
     },
     {"name": "sales.invoices", "columns": [{"name": "invoice_date", "type": "date"}, {"name": "id", "type": "uuid"}]},
     {"name": "Customers", "columns": [{"name": "parent_id", "references": "Customers"}]},
+    {"name": "addresses", "columns": [{"name": "status_id", "references": "order_statuses"}]},
+    {"name": "movies"},
     {"name": "order_statuses"},
     {"name": "Companies", "columns": [{"name": "customer_id", "references": "Customers"}]},
 ]
@@ -145,10 +150,31 @@ def unknown_key_error(kind, value):
     return "no error"
 
 
+def neo4j_export_warnings():
+    """Export a schema holding every field the Neo4j ontology cannot carry, and return what it logs.
+
+    @return (str): the logged warning lines joined by newlines, empty when the export logs nothing.
+    """
+    lines: list[str] = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            lines.append(record.getMessage())
+
+    sink = _Sink()
+    logger = logging.getLogger("selfgraph")
+    logger.addHandler(sink)
+    try:
+        Schema.model_validate(NEO4J_LOSS_SPEC).to_neo4j_ontology()
+    finally:
+        logger.removeHandler(sink)
+    return "\n".join(lines)
+
+
 def schema_warnings():
     """Validate each schema case and return its warnings as code and message pairs, plus unknown-key errors.
 
-    @return (dict): one list of {code, message} per case, and one message per unknown-key case.
+    @return (dict): one list of {code, message} per case, one message per unknown-key case, the schema drafted from tables, the schema term forms, the expanded tokens per question, and the fields the Neo4j export drops.
     """
     schema = Schema.model_validate(SCHEMA_SPEC)
     cases = [Extraction.model_validate(case) for case in SCHEMA_CASES]
@@ -163,6 +189,7 @@ def schema_warnings():
         "unknown_keys": [unknown_key_error(kind, value) for kind, value in UNKNOWN_KEY_CASES],
         "tables": to_jsonable(Schema.from_tables(TABLES, name="sales")),
         "term_forms": to_jsonable(schema_forms(Schema.model_validate(TERMS_SPEC))),
+        "neo4j_dropped": neo4j_export_warnings(),
         "terms": [
             sorted(expand_tokens(_tokens(q), terms, _tokens))
             for terms in [Schema.model_validate(TERMS_SPEC)]
@@ -189,6 +216,17 @@ STORES = {
     "kuzu": lambda p: __import__("selfgraph").KuzuStore(p),
 }
 
+SUPERSEDE_SCHEMA = {
+    "entities": [{"name": "Person"}, {"name": "Company"}],
+    "relations": [
+        {
+            "type": "WORKS_AT",
+            "from": {"types": ["Person"], "max_count": 1},
+            "to": {"types": ["Company"], "max_count": 1},
+        }
+    ],
+}
+
 ZOE = ids.entity_id("Person", "Zoë Ångström")
 
 FACTS = {
@@ -203,6 +241,8 @@ FACTS = {
         {"type": "Database", "name": "HydraDB"},
         {"type": "Database", "name": "Postgres"},
         {"type": "Person", "name": "Zoë Ångström"},
+        {"type": "Person", "name": "राम"},
+        {"type": "Person", "name": "रीमा"},
     ],
     "relations": [
         {
@@ -218,6 +258,7 @@ FACTS = {
             "event_time": "2024-03-01T12:30:00.654321Z",
         },
         {"from_entity": ZOE, "type": "KNOWS", "to_entity": "person:jane-doe"},
+        {"from_entity": ids.entity_id("Person", "रीमा"), "type": "रहती है", "to_entity": "database:postgres"},
     ],
     "preferences": [
         {
@@ -250,6 +291,32 @@ FACTS = {
 TEXT = "Grace Hopper joined Remington Rand. Grace Hopper wrote COBOL. Zoë Ångström met Ada Lovelace in 北京."
 
 
+NEO4J_LOSS_SPEC = {
+    "name": "conformance",
+    "entities": [
+        {
+            "name": "Person",
+            "aliases": ["Human"],
+            "synonyms": ["individual"],
+            "certified": True,
+            "mappings": [{"source": "crm", "table": "users"}],
+            "definitions": [{"name": "seniority", "expression": "count(Job)"}],
+        },
+        {"name": "Org"},
+        {"name": "Company", "parent": "Org"},
+    ],
+    "relations": [
+        {
+            "type": "OWNS",
+            "synonyms": ["holds"],
+            "certified": True,
+            "from": {"types": ["Person"]},
+            "to": {"types": ["Company"]},
+        }
+    ],
+}
+
+
 async def write(graph):
     out = {}
     out["facts"] = to_jsonable(await graph.insert.facts(FACTS, source_id="spec"))
@@ -266,8 +333,35 @@ async def write(graph):
     out["pref_update"] = to_jsonable(await graph.preferences.update(pref, strength=0.25))
     dec = ids.decision_id("person:jane-doe", "Pick HydraDB")
     out["dec_update"] = to_jsonable(await graph.decisions.update(dec, status="active", rationale=None))
+    restated = {"title": "Pick HydraDB", "actor_entity": "person:jane-doe"}
+    out["dec_restate"] = to_jsonable(await graph.insert.facts({"decisions": [restated]}))
+    out["rel_restate"] = to_jsonable(
+        await graph.insert.facts(
+            {
+                "relations": [
+                    {"from_entity": "company:acme", "type": "USES", "to_entity": "database:hydradb"},
+                ]
+            }
+        )
+    )
+    out["pref_restate"] = to_jsonable(
+        await graph.insert.facts(
+            {
+                "preferences": [
+                    {
+                        "subject_entity": "person:jane-doe",
+                        "key": "database",
+                        "value_entity": "database:hydradb",
+                    }
+                ]
+            }
+        )
+    )
     out["ent_update"] = to_jsonable(
         await graph.entities.update("company:acme", aliases=["ACME", "Acme Co"], properties={"hq": "Paris", "n": 3})
+    )
+    out["ent_type_case"] = to_jsonable(
+        await graph.insert.facts({"entities": [{"type": "company", "name": "Acme, Inc."}]})
     )
     out["rel_create"] = to_jsonable(
         await graph.relations.create(
@@ -290,9 +384,73 @@ async def write(graph):
     await graph.entities.create("Temp Thing", "Thing", properties={"k": "v"})
     await graph.relations.create("thing:temp-thing", "TOUCHES", "company:acme")
     await graph.preferences.create("thing:temp-thing", "color", "company:acme", strength=1.0)
+    try:
+        await graph.entities.create("Unsafe", "Thing", properties={"n": 2**53})
+        out["unsafe_integer"] = "accepted"
+    except ValidationError as exc:
+        out["unsafe_integer"] = str(exc)
     out["ent_delete"] = to_jsonable(await graph.entities.delete("thing:temp-thing"))
     out["rel_delete"] = to_jsonable(await graph.relations.delete(ids.relation_id(ZOE, "KNOWS", "person:jane-doe")))
+    out["retrieval_overflow"] = await overflow(graph)
     return out
+
+
+async def supersede(graph):
+    """Supersede relations capped at both endpoints, with facts arriving out of order across batches.
+
+    @param graph (SelfGraph): a graph with a two-sided max_count schema and contradiction="supersede".
+    @return (dict): each relation's versions, newest first, and the warning codes of each insert.
+    """
+    people = [{"type": "Person", "name": n} for n in ("Ann", "Bob")]
+    companies = [{"type": "Company", "name": n} for n in ("Acme", "Globex", "Initech")]
+    await graph.insert.facts({"entities": [*people, *companies]})
+
+    def link(person, company, year):
+        return {
+            "from_entity": f"person:{person}",
+            "type": "WORKS_AT",
+            "to_entity": f"company:{company}",
+            "event_time": datetime(year, 1, 1, tzinfo=timezone.utc),
+        }
+
+    batches = [
+        [link("ann", "acme", 2020)],
+        [link("ann", "initech", 2026)],
+        [link("ann", "globex", 2024), link("bob", "acme", 2022)],
+    ]
+    out = {"warnings": []}
+    for batch in batches:
+        result = await graph.insert.facts({"relations": batch})
+        out["warnings"].append([w.code for w in result.warnings])
+    out["versions"] = {}
+    for person, company in (("ann", "acme"), ("ann", "globex"), ("ann", "initech"), ("bob", "acme")):
+        rid = ids.relation_id(f"person:{person}", "WORKS_AT", f"company:{company}")
+        out["versions"][rid] = [
+            [
+                v.revision,
+                v.is_current,
+                v.invalidated_by,
+                _serde.json_iso(v.invalidated_at) if v.invalidated_at else None,
+            ]
+            for v in await graph.relations.versions(rid)
+        ]
+    return out
+
+
+async def overflow(graph):
+    """Retrieve under a budget where a near line fits, the next overflows under any counter, and short lines remain.
+
+    @param graph (SelfGraph): the conformance graph, whose store holds a separate namespace for this case.
+    @return (dict): the context at the tight budget and at the default one.
+    """
+    g = SelfGraph(store=graph.store, namespace=f"{graph.namespace}_budget")
+    for name in ("Ann", "Bob", "Cid"):
+        await g.entities.create(name, "Person", id=f"person:{name.lower()}")
+    await g.relations.create("person:ann", "KNOWS", "person:bob")
+    await g.relations.create("person:bob", "KNOWS", "person:cid", properties={"note": "met at the old harbour " * 20})
+    tight = await g.retrieve("Ann", k=1, depth=2, budget_tokens=12)
+    full = await g.retrieve("Ann", k=1, depth=2)
+    return {"tight": tight.context, "full": full.context}
 
 
 async def all_evidence(list_fn, oid):
@@ -337,6 +495,7 @@ async def dump(graph, ns):
     retrieval = await graph.retrieve("what did Grace Hopper write about COBOL and Jane", depth=2)
     ppr = await graph.retrieve("what did Grace Hopper write about COBOL and Jane", strategy="ppr", depth=3, max_nodes=4)
     dfs = await graph.retrieve("Zoë ÅNGSTRÖM acme", strategy="dfs", depth=2)
+    marks = await graph.retrieve("रीमा कहाँ रहती है?", depth=1)
     tight = {
         walk: await graph.retrieve("Grace Hopper COBOL Jane acme", strategy=walk, k=1, depth=4, max_nodes=3)
         for walk in ("bfs", "dfs")
@@ -347,9 +506,11 @@ async def dump(graph, ns):
         tier: await termed.retrieve("which employers hired staff members named Hopper", seeds=tier, depth=0)
         for tier in ("bm25", "synonyms")
     }
+    pruned = await termed.maintenance.prune(older_than=datetime.now(timezone.utc), types=["User", "DATABASE"])
     return to_jsonable(
         {
             "answerable": answerable,
+            "prune_types": pruned,
             "retrieval_seeded": {tier: {"seeds": r.seeds, "tiers": r.tiers} for tier, r in seeded.items()},
             "tiers": termed.tiers,
             "entities": sorted(entities, key=lambda e: e.id),
@@ -370,6 +531,7 @@ async def dump(graph, ns):
                 "entities": [e.id for e in ppr.subgraph.entities],
             },
             "retrieval_dfs": {"seeds": dfs.seeds, "context": dfs.context},
+            "retrieval_marks": {"seeds": marks.seeds, "context": marks.context},
             "retrieval_tight": {
                 walk: {
                     "entities": [e.id for e in r.subgraph.entities],
@@ -388,10 +550,14 @@ async def main():
         return
     store_name, ns = sys.argv[2], sys.argv[3]
     kuzu_path = sys.argv[4] if len(sys.argv) > 4 else None
-    graph = SelfGraph(store=STORES[store_name](kuzu_path), namespace=ns)
+    options = {"schema": SUPERSEDE_SCHEMA, "contradiction": "supersede"} if cmd == "supersede" else {}
+    graph = SelfGraph(store=STORES[store_name](kuzu_path), namespace=ns, **options)
     try:
         await graph.initialize()
-        result = await write(graph) if cmd == "write" else await dump(graph, ns)
+        if cmd == "supersede":
+            result = await supersede(graph)
+        else:
+            result = await write(graph) if cmd == "write" else await dump(graph, ns)
     finally:
         await graph.close()
     json.dump(result, sys.stdout, sort_keys=True, ensure_ascii=False)

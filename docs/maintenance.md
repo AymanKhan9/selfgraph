@@ -61,7 +61,7 @@ least one of `min_relevance` or `older_than` is required.
 |----------|---------|
 | `min_relevance` | Items whose `relevance` is below this, a number in `[0, 1]`. Items never scored do not match. |
 | `older_than` | Items whose latest timestamp is before this time. A time more than one minute ahead raises `ValidationError`. |
-| `types` | Narrows the entities to these entity types. Not a criterion on its own. |
+| `types` | Narrows the entities to these entity types, ignoring letter case; with a schema, an alias matches its type. Not a criterion on its own. |
 | `relation_types` | Narrows the relations to these relation types, normalized like any relation type. Not a criterion on its own. |
 
 Each narrowing filter applies only to its own kind:

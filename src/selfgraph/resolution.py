@@ -164,7 +164,7 @@ def _words(name: str) -> list[str]:
     @param name (str): the entity name.
     @return (list[str]): the folded letter and digit runs, in order.
     """
-    return re.findall(r"[^\W_]+", _fold(name.strip()))
+    return _ids._word_runs(_fold(name.strip()))
 
 
 def _distinguishers(words: list[str]) -> tuple[list[str], list[str], list[str]]:
@@ -1270,7 +1270,7 @@ async def unmerge(runner: Any, ns: str, merge_id: str) -> UnmergeResult:
             rationale=back.rationale,
             outcome_entity=back.outcome_entity,
             alternative_entities=back.alternative_entities,
-            status=back.status,
+            status=back.status or "completed",
             event_time=back.event_time,
             created_at=at,
         )

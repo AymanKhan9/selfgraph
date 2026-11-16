@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from helpers import NEO4J_URI, DriverError, make_store, run, store_settings
 
-from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph
+from selfgraph import KuzuStore, Neo4jStore, Schema, SelfGraph, SyncSelfGraph
 from selfgraph._serde import LABELS
 from selfgraph.errors import StoreError, TransientError, ValidationError, surface_hint
 from selfgraph.models import CypherResult
@@ -38,6 +38,7 @@ def test_build_neo4j_graph():
     g = build_graph(GraphSettings(store="neo4j", uri=NEO4J_URI, namespace="ns1"))
     assert isinstance(g.store, Neo4jStore)
     assert g.namespace == "ns1"
+    run(g.close())
 
 
 def test_parse_auth():
@@ -93,6 +94,7 @@ def test_jsonable_and_dumps():
     assert json.loads(dumps(e))["id"] == "company:hydradb"
     assert to_jsonable(None) is None
     assert to_jsonable([e])[0]["name"] == "HydraDB"
+    run(g.close())
 
 
 def test_blank_namespace_rejected_unset_defaults(monkeypatch):
@@ -102,7 +104,9 @@ def test_blank_namespace_rejected_unset_defaults(monkeypatch):
     monkeypatch.setenv("SELFGRAPH_NAMESPACE", "")
     with pytest.raises(ValidationError, match="namespace"):
         build_graph(settings_from_env(store="neo4j", uri=NEO4J_URI))
-    assert build_graph(GraphSettings(store="neo4j", uri=NEO4J_URI, namespace=None)).namespace == "default"
+    g = build_graph(GraphSettings(store="neo4j", uri=NEO4J_URI, namespace=None))
+    assert g.namespace == "default"
+    run(g.close())
 
 
 def test_store_kind():
@@ -241,6 +245,19 @@ def test_kuzu_paths_settings_and_errors(caplog, monkeypatch, tmp_path):
     for uri in ("graph.kuzu", str(tmp_path / "db")):
         with pytest.raises(ValidationError, match='this looks like a Kuzu path; pass store="kuzu"'):
             build_graph(GraphSettings(uri=uri))
+
+
+def test_kuzu_relative_path_uses_each_stores_working_directory(tmp_path, monkeypatch):
+    pytest.importorskip("kuzu")
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(tmp_path)
+    with SyncSelfGraph(KuzuStore("graph.kuzu")) as first:
+        entity = first.entities.create("Jane", "Person")
+        monkeypatch.chdir(other)
+        with SyncSelfGraph(KuzuStore("graph.kuzu")) as second:
+            assert second.entities.get(entity.id) is None
+        assert first.entities.get(entity.id) == entity
 
 
 def test_bind_params_checks_references_and_drops_unused():

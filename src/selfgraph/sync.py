@@ -70,6 +70,7 @@ class SyncSelfGraph:
 
     def _bind(self, graph: SelfGraph) -> None:
         self._loop = asyncio.new_event_loop()
+        self._loop_lock = threading.RLock()
         self._async = graph
         self.store = graph.store
         self.namespace = graph.namespace
@@ -89,28 +90,29 @@ class SyncSelfGraph:
         return self._async.schema
 
     def _run(self, coro):
-        if self._loop.is_closed():
-            coro.close()
-            raise StoreError(CLOSED_MESSAGE)
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return self._loop.run_until_complete(coro)
-
-        out: dict[str, Any] = {}
-
-        def worker() -> None:
+        with self._loop_lock:
+            if self._loop.is_closed():
+                coro.close()
+                raise StoreError(CLOSED_MESSAGE)
             try:
-                out["value"] = self._loop.run_until_complete(coro)
-            except BaseException as exc:  # noqa: BLE001
-                out["error"] = exc
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return self._loop.run_until_complete(coro)
 
-        thread = threading.Thread(target=worker)
-        thread.start()
-        thread.join()
-        if "error" in out:
-            raise out["error"]
-        return out["value"]
+            out: dict[str, Any] = {}
+
+            def worker() -> None:
+                try:
+                    out["value"] = self._loop.run_until_complete(coro)
+                except BaseException as exc:  # noqa: BLE001
+                    out["error"] = exc
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            thread.join()
+            if "error" in out:
+                raise out["error"]
+            return out["value"]
 
     def initialize(self) -> None:
         return self._run(self._async.initialize())
@@ -120,13 +122,14 @@ class SyncSelfGraph:
 
         @return (None): nothing.
         """
-        if self._loop.is_closed():
-            return
-        try:
-            self._run(self._async.close())
-        finally:
-            if not self._loop.is_closed():
-                self._loop.close()
+        with self._loop_lock:
+            if self._loop.is_closed():
+                return
+            try:
+                self._run(self._async.close())
+            finally:
+                if not self._loop.is_closed():
+                    self._loop.close()
 
     def run_cypher(self, *args: Any, **kwargs: Any):
         return self._run(self._async.run_cypher(*args, **kwargs))

@@ -266,6 +266,7 @@ def test_readiness_reports_an_unreachable_store():
     report = run(g.readiness())
     assert (report.ready, report.reachable, report.store) == (False, False, "Neo4jStore")
     assert "127.0.0.1:1" in report.error
+    run(g.close())
 
 
 def test_ossie_export_maps_types_properties_and_relations():
