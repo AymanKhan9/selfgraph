@@ -1,7 +1,7 @@
 import pytest
-from helpers import RAW_CYPHER, create_entities, fresh_graph, new_graph, run
+from helpers import HYDRADB, RAW_CYPHER, create_entities, fresh_graph, new_graph, run
 
-from selfgraph import ConflictError, NotFoundError, ValidationError
+from selfgraph import ConflictError, NotFoundError, StoreError, ValidationError
 
 
 def seed(g):
@@ -155,3 +155,14 @@ def test_update_clears_named_fields_and_null_keeps():
         run(g.preferences.update(pref.id, clear=["key"]))
     with pytest.raises(ValidationError, match="cannot both set and clear 'strength'"):
         run(g.preferences.update(pref.id, strength=0.5, clear=["strength"]))
+
+
+@pytest.mark.skipif(not HYDRADB, reason="the Bolt message limit is HydraDB's")
+def test_an_update_over_the_hydradb_message_limit_keeps_the_current_version():
+    g = new_graph()
+    seed(g)
+    pref = run(g.preferences.create("person:soham", "employer", "company:hydradb"))
+    with pytest.raises(StoreError, match="Bolt message"):
+        run(g.preferences.update(pref.id, properties={"blob": "x" * 1_100_000}))
+    current = run(g.preferences.get(pref.id))
+    assert (current.revision, current.properties) == (1, {})

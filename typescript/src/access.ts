@@ -140,6 +140,10 @@ export class GraphAccess {
     return { contradiction: judged ? "supersede" : mode, caps: contradictionCaps(schema), judged };
   }
 
+  caps(): Map<string, RelationCap> {
+    return contradictionCaps(this.schema);
+  }
+
   private requireOpen(): void {
     if (this.closed) throw new StoreError(CLOSED_MESSAGE);
   }

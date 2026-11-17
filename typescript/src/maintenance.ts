@@ -137,10 +137,10 @@ export async function writeEntityRelevance(
   for (const [eid, props] of await ops.nodesById(runner, ns, L_ENTITY, [...scores.keys()])) {
     const e = decodeEntity(props);
     const encoded = encodeEntityProps({ ns, ...e, relevance: scores.get(eid)!, relevance_at: at });
-    ops.precheckWrite(runner, encoded);
     byType.set(e.type, [...(byType.get(e.type) ?? []), [eid, encoded]]);
     written++;
   }
+  ops.precheckNodes(runner, ns, L_ENTITY, [...byType.values()].flat());
   for (const [etype, rows] of byType) await runner.upsertNodes(ns, L_ENTITY, rows, { extra_label: etype });
   return written;
 }
@@ -174,7 +174,7 @@ export async function writeRelationRelevance(
     if (!edge.props.is_current) continue;
     rows.push([edge.type, edge.from_id, edge.to_id, { ...edge.props, ...relevanceProps(scores.get(rid)!, at) }]);
   }
-  for (const [, , , props] of rows) ops.precheckWrite(runner, props);
+  ops.precheckEdges(runner, ns, L_ENTITY, L_ENTITY, rows);
   if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
   return rows.length;
 }
@@ -194,7 +194,7 @@ export function foldProperties(
   const conflicts: Record<string, string[]> = {};
   for (const rel of duplicates) {
     for (const [key, value] of Object.entries(rel.properties)) {
-      if (!(key in merged)) merged[key] = value;
+      if (!Object.hasOwn(merged, key)) merged[key] = value;
       else if (!deepEqual(merged[key], value)) conflicts[rel.id] = [...(conflicts[rel.id] ?? []), key];
     }
   }
@@ -246,11 +246,19 @@ export async function mergeRelations(
   const [merged] = foldProperties(current, found);
   const first = earliest([current.event_time, ...found.map((rel) => rel.event_time)]);
   await ops.updateRelation(runner, ns, survivor, {
-    set_properties: Object.fromEntries(Object.entries(merged).filter(([key]) => !(key in current.properties))),
+    set_properties: Object.fromEntries(
+      Object.entries(merged).filter(([key]) => !Object.hasOwn(current.properties, key)),
+    ),
     remove_properties: [],
     event_time: toIso(first) === toIso(current.event_time) ? null : first,
     evidence,
   });
+  const gone = found.map((rel) => ({
+    props: { id: rel.id },
+    type: rel.type,
+    from_id: rel.from_entity,
+    to_id: rel.to_entity,
+  }));
   const rids = found.map((rel) => rel.id);
   const tids = await ops.tracesTouchingRelations(runner, ns, rids);
   await ops.repointSteps(runner, ns, tids, new Map(rids.map((rid) => [rid, survivor])));
@@ -258,6 +266,7 @@ export async function mergeRelations(
     counts.deleted_relation_versions += await runner.deleteEdges(ns, rid);
     await ops.deleteEvidence(runner, ns, rid);
   }
+  await ops.repointRetired(runner, ns, gone, survivor);
   return counts;
 }
 

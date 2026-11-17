@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -243,14 +244,20 @@ class FakeLLM:
 
 
 def extracting_llm(entities: list[tuple[str, str]], relations: list[tuple[str, str, str]] = ()) -> FakeLLM:
-    from selfgraph import EntityInput
-    from selfgraph.extraction.extractor import _EntitiesOut, _RelationsOut, _RelOut
+    from selfgraph.extraction.extractor import _EntitiesOut, _EntityOut, _RelationsOut, _RelOut
 
     return FakeLLM(
         {
-            "_EntitiesOut": _EntitiesOut(entities=[EntityInput(type=t, name=n) for t, n in entities]),
+            "_EntitiesOut": _EntitiesOut(entities=[_EntityOut(type=t, name=n) for t, n in entities]),
             "_RelationsOut": _RelationsOut(
                 relations=[_RelOut(from_name=a, type=b, to_name=c) for a, b, c in relations]
             ),
         }
     )
+
+
+def instant():
+    time.sleep(0.01)
+    stamp = datetime.now(timezone.utc)
+    time.sleep(0.01)
+    return stamp

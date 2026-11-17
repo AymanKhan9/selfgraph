@@ -58,6 +58,7 @@ export type DateTimeInput = z.input<typeof DateTimeInput>;
 const nullable = <T extends z.ZodType>(schema: T) => schema.nullish().transform((v) => v ?? null);
 export const optString = nullable(z.string());
 export const optNumber = nullable(z.number());
+export const optInt = nullable(z.number().int());
 const optDate = nullable(DateTimeInput);
 const props = <V extends z.ZodType<JsonValue>>(label: string, values: V = JsonValue as unknown as V) =>
   z
@@ -142,6 +143,16 @@ export interface Relation {
   certified_at: Date | null;
   certified_by: string | null;
   certifications: Certification[];
+}
+
+export interface GraphDiff {
+  since: Date;
+  until: Date;
+  relations_added: Relation[];
+  relations_retired: Relation[];
+  relations_revised: Relation[];
+  entities_created: Entity[];
+  limitations: string[];
 }
 
 export interface Preference {
@@ -266,6 +277,7 @@ export interface DeleteResult {
   deleted_relation_versions: number;
   deleted_decisions: number;
   deleted_preference_versions: number;
+  restored_relations: number;
 }
 
 export interface DecayResult {

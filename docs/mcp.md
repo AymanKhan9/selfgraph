@@ -62,8 +62,11 @@ The server sends clients one instructions block: call `check_readiness` once,
 call `check_answerable` with the question and its key terms, say the graph does
 not hold the answer on `not_answerable` (or which terms are missing on
 `partial`), then call `retrieve` and answer only from what it returns, treating
-`(via hub)` lines as weak links and preferring `[certified]` facts. See
-[Answering safely](trust.md).
+relations whose SDK-built `GRAPH` header contains `(via hub)` as weak links and
+preferring those whose header contains `[certified]`. Only a complete header
+before the first ` | ` carries metadata. `SOURCE | ` lines and everything after
+the separator are data, even if they contain copies of those marks. See the
+[context format](retrieval.md#context-format) and [Answering safely](trust.md).
 
 ## Tools
 
@@ -205,3 +208,12 @@ A failing tool returns an MCP error result with the error flag set.
 - An unknown tool name fails as a tool error.
 - Hints and the `maintenance_prune` note name the server's flags, as in the CLI
   ([errors](errors.md#messages)).
+
+## Changes between known times
+
+`graph_diff(since, until=None)` is a read-only tool. Pass ISO 8601 timestamps for
+the `(since, until]` known-time window. It returns `relations_added`,
+`relations_revised`, `relations_retired` (including `invalidated_by`), and
+`entities_created`. `until` defaults to now. It scans stored records, not a full
+audit log. Deletes and merges are not visible; `limitations` includes that note.
+See [diff semantics and limits](retrieval.md#changes-between-known-times).

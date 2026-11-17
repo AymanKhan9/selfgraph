@@ -231,3 +231,16 @@ methods (`runCypher`) and options in a trailing object
 Watch the property argument: `entities.update` and `preferences.update` take
 `properties=` (CLI `--prop`), while `relations.update` takes `set_properties=`
 (CLI `--set`).
+
+## Changes between known times
+
+```bash
+selfgraph diff --since 2026-01-01T00:00:00Z --until 2026-02-01T00:00:00Z
+selfgraph diff --since 2026-01-01T00:00:00Z --json
+```
+
+The default output lists `+` additions, `~` revisions, and `-` retirements with
+relation endpoints and `invalidated_by`. `--json` returns the typed result as JSON.
+The known-time window is `(since, until]`; `until` defaults to now.
+Deletes and merges are not visible. JSON includes this note in `limitations`.
+See [diff semantics and limits](retrieval.md#changes-between-known-times).

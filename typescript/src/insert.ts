@@ -37,6 +37,7 @@ import {
   type ResolverMode,
   resolverFor,
   saveMerges,
+  trimResolution,
 } from "./resolution.js";
 import {
   asSchema,
@@ -230,18 +231,23 @@ export class Insert {
       contradiction: judged ? "llm" : conflicts,
     };
     return this.graph.write(async (tx, ns) => {
-      let canonical = await ops.validateFacts(tx, ns, facts, (o) => canonicalizeTypes(o, activeSchema));
-      let dropped: InsertWarning[] = [];
-      if (extracted && mode === "strict") [canonical, dropped] = await dropOffSchema(tx, ns, canonical, activeSchema);
-      const maxCount = mode === "strict" && conflicts !== "off";
-      const checked = await enforceSchema(tx, ns, canonical, activeSchema, mode, true, maxCount);
-      const found: InsertWarning[] = [];
-      const resolution =
+      const canonical = await ops.validateFacts(tx, ns, facts, (o) => canonicalizeTypes(o, activeSchema));
+      let resolution =
         activeResolver === null
           ? null
           : await planResolution(tx, ns, canonical, activeResolver, activeSchema, createdAt);
-      const resolved = resolution?.facts ?? canonical;
-      if (mode === "strict" && conflicts === "warn") await ops.requireMaxCount(tx, ns, caps, resolved.relations);
+      let resolved = resolution?.facts ?? canonical;
+      let dropped: InsertWarning[] = [];
+      if (extracted && mode === "strict") {
+        [resolved, dropped] = await dropOffSchema(tx, ns, resolved, activeSchema);
+        if (resolution !== null && dropped.length) resolution = trimResolution(resolution, resolved);
+      }
+      const maxCount = mode === "strict" && conflicts !== "off";
+      const checked = await enforceSchema(tx, ns, resolved, activeSchema, mode, true, maxCount, null, true);
+      const found: InsertWarning[] = [];
+      if (mode === "strict" && conflicts === "warn")
+        await ops.requireMaxCount(tx, ns, caps, resolved.relations, source.default_event_time, createdAt);
+      await ops.requireRelationIdentities(tx, ns, resolved.relations);
       let sourceVersion: string | null = null;
       let baseEvidence: Evidence[] = [];
       const prior =
@@ -277,8 +283,7 @@ export class Insert {
         { contradiction: conflicts, caps, warnings: found },
       );
       if (judged && llm !== null) {
-        const fresh = relations.filter((r) => r.created_at.getTime() === createdAt.getTime());
-        found.push(...(await judgeContradictions(tx, ns, llm, fresh, caps, createdAt)));
+        found.push(...(await judgeContradictions(tx, ns, llm, relations, caps, createdAt)));
       }
 
       let diff: SourceDiff | null = null;

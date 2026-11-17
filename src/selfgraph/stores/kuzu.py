@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
-import re
+import threading
+import time
 from collections.abc import Mapping
+from concurrent.futures import Future
+from contextvars import ContextVar
+from functools import partial
 from typing import Any
 
-from ..errors import StoreError, ValidationError
-from ..ids import quote_label
-from ..models import CypherResult
+from ..errors import SelfGraphError, StoreError, ValidationError
+from ..ids import quote_label, require_identifier
+from ..models import CypherResult, JsonValue
 from ._cypher import AutoCommitStore, count_of, where_after, write_batches
 from ._docrows import docs, edge_row, first_doc, merged_current_edge
 
 __all__ = ["KuzuStore"]
-
-_SAFE_COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _normalize(value: Any) -> Any:
@@ -38,25 +41,70 @@ def _normalize(value: Any) -> Any:
     return str(value)
 
 
-def _safe_order_by(order_by: str) -> str:
-    """Validate an order_by column is a plain identifier before interpolation.
-
-    @param order_by (str): the column name to order by.
-    @return (str): the validated column name.
-    """
-    if not _SAFE_COLUMN.match(order_by):
-        raise ValidationError(f"invalid order_by column {order_by!r}")
-    return order_by
-
-
 _SCHEMA = (
     "CREATE NODE TABLE IF NOT EXISTS N(pk STRING, id STRING, ns STRING, label STRING, doc STRING, PRIMARY KEY(pk))",
     "CREATE REL TABLE IF NOT EXISTS R(FROM N TO N, sid STRING, ns STRING, etype STRING, "
     "is_current BOOLEAN, revision INT64, doc STRING)",
 )
-_DATABASES: dict[str, Any] = {}
-_OPEN_STORES: dict[str, int] = {}
+_DATABASES: dict[object, Any] = {}
+_DATABASE_OPTIONS: dict[object, dict[str, Any]] = {}
+
+
+_PENDING: ContextVar[tuple[Future[None], ...]] = ContextVar("selfgraph_kuzu_locks", default=())
+
+
+class _PathLock:
+    def __init__(self) -> None:
+        released: Future[None] = Future()
+        released.set_result(None)
+        self._tail = released
+        self._claim = threading.Lock()
+
+    def _join(self) -> tuple[Future[None], Future[None]]:
+        """Take the next place in the queue.
+
+        @return (tuple[Future[None], Future[None]]): the future to wait on, and this waiter's own token.
+        """
+        with self._claim:
+            previous = self._tail
+            mine: Future[None] = Future()
+            self._tail = mine
+        return previous, mine
+
+    async def __aenter__(self) -> None:
+        """Wait for the store ahead in the queue to release.
+
+        @return (None): nothing.
+        """
+        previous, mine = self._join()
+        _PENDING.set((*_PENDING.get(), mine))
+        try:
+            await asyncio.shield(asyncio.wrap_future(previous))
+        except BaseException:
+            _PENDING.set(_PENDING.get()[:-1])
+            previous.add_done_callback(lambda _done, _mine=mine: _mine.set_result(None))
+            raise
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        """Release the lock and hand the queue to the next waiter.
+
+        @param exc_info (object): the exception triple, ignored.
+        @return (None): nothing.
+        """
+        pending = _PENDING.get()
+        token = pending[-1]
+        _PENDING.set(pending[:-1])
+        token.set_result(None)
+
+
+_CACHE_LOCK = threading.Lock()
+_LOCKS: dict[object, _PathLock] = {}
+_WRITE_LOCKS: dict[object, _PathLock] = {}
+_OPEN_STORES: dict[object, int] = {}
 _MAX_SKIP = 10_000_000
+_RECONNECT_EVERY = 500
+_NOW = "RETURN current_timestamp()"
+_CLOCK_TICK = 0.02
 
 
 def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
@@ -74,6 +122,34 @@ def _kuzu_error(exc: BaseException, prefix: str) -> StoreError:
     elif "Buffer manager exception: Mmap for size" in str(exc):
         message += "; too many Kuzu databases open in this process or max_db_size too large; pass a smaller max_db_size"
     return StoreError(message)
+
+
+def _release_store(key: object) -> None:
+    """Release one open-store reference, closing the cached database once the last store lets it go.
+
+    @param key (object): the cache key the store was opened under.
+    @return (None): nothing.
+    """
+    with _CACHE_LOCK:
+        _OPEN_STORES[key] -= 1
+        if _OPEN_STORES[key] == 0:
+            del _OPEN_STORES[key]
+            _DATABASES.pop(key).close()
+            _DATABASE_OPTIONS.pop(key, None)
+            _LOCKS.pop(key, None)
+            _WRITE_LOCKS.pop(key, None)
+
+
+def _db_options(kuzu: Any, db_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Resolve Kuzu database kwargs against the kuzu.Database defaults.
+
+    @param kuzu (Any): the lazily imported kuzu module.
+    @param db_kwargs (dict[str, Any]): options a store was constructed with.
+    @return (dict[str, Any]): every kuzu.Database option resolved to its effective value.
+    """
+    params = inspect.signature(kuzu.Database.__init__).parameters
+    defaults = {n: p.default for n, p in params.items() if p.default is not inspect.Parameter.empty}
+    return {**defaults, **db_kwargs}
 
 
 def _pk(ns: str, id: str) -> str:
@@ -114,8 +190,8 @@ def _where_doc_equals(alias: str, equals: dict | None, where: list[str], params:
     @return (None): nothing.
     """
     for i, (key, value) in enumerate(sorted((equals or {}).items())):
-        where.append(f"json_extract({alias}.doc, $k{i}) = $v{i}")
-        params[f"k{i}"] = key
+        where.append(f"json_extract({alias}.doc, $k{i}) = json($v{i})")
+        params[f"k{i}"] = require_identifier(key)
         params[f"v{i}"] = _jv(value)
 
 
@@ -129,11 +205,14 @@ def _where_doc_any_of(ns: str, any_of: dict | None, where: list[str], params: di
     @return (None): nothing.
     """
     for i, (key, values) in enumerate(sorted((any_of or {}).items())):
-        if key == "id":
+        key = require_identifier(key)
+        if not values:
+            where.append("false")
+        elif key == "id":
             where.append(f"n.pk IN $in{i}")
             params[f"in{i}"] = [_pk(ns, v) for v in values]
         else:
-            where.append(f"CAST(json_extract(n.doc, $ik{i}) AS STRING) IN $in{i}")
+            where.append(f"CAST(json_extract(n.doc, $ik{i}) AS STRING) IN list_transform($in{i}, x -> json(x))")
             params[f"ik{i}"] = key
             params[f"in{i}"] = [_jv(v) for v in values]
 
@@ -142,6 +221,13 @@ class KuzuStore(AutoCommitStore):
     query_labels = ("N", "R")
 
     def __init__(self, path: str = "selfgraph_kuzu", **db_kwargs: Any) -> None:
+        """Open a Kuzu store on a path, sharing one cached database per path in this process.
+
+        @param path (str): the database directory or file.
+        @param db_kwargs (Any): kuzu.Database options, applied when this process first opens the path;
+            a second store on the path must not pass different values.
+        @return (None): nothing.
+        """
         try:
             import kuzu
         except ImportError as exc:  # pragma: no cover
@@ -152,19 +238,40 @@ class KuzuStore(AutoCommitStore):
         path = os.path.expanduser(path)
         if path not in ("", ":memory:"):
             path = os.path.abspath(path)
-        if path not in _DATABASES:
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            try:
-                _DATABASES[path] = kuzu.Database(path, **db_kwargs)
-            except Exception as exc:  # noqa: BLE001
-                raise _kuzu_error(exc, f"could not open Kuzu database {path!r}") from exc
-        self._path = path
-        self._db = _DATABASES[path]
-        self._conn = kuzu.Connection(self._db)
-        _OPEN_STORES[path] = _OPEN_STORES.get(path, 0) + 1
-        self._lock = asyncio.Lock()
+        key = object() if path in ("", ":memory:") else path
+        with _CACHE_LOCK:
+            db = _DATABASES.get(key)
+            if db is None:
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                try:
+                    db = _DATABASES[key] = kuzu.Database(path, **db_kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    raise _kuzu_error(exc, f"could not open Kuzu database {path!r}") from exc
+                _DATABASE_OPTIONS[key] = _db_options(kuzu, db_kwargs)
+            else:
+                open_options = _DATABASE_OPTIONS[key]
+                diffs = ", ".join(
+                    f"{k} {open_options.get(k)!r} vs {v!r}"
+                    for k, v in sorted(db_kwargs.items())
+                    if v != open_options.get(k)
+                )
+                if diffs:
+                    raise ValidationError(f"KuzuStore({path!r}) is already open with different options: {diffs}")
+            _OPEN_STORES[key] = _OPEN_STORES.get(key, 0) + 1
+            self._lock = _LOCKS.setdefault(key, _PathLock())
+            self._write_lock = _WRITE_LOCKS.setdefault(key, _PathLock())
+        self._cache_key = key
+        self._db = db
+        self._connect = partial(kuzu.Connection, db)
+        try:
+            self._conn = self._connect()
+        except Exception:
+            _release_store(key)
+            raise
+        self._statements = 0
+        self._raw = False
 
-    async def _run(self, query: str, params: Mapping[str, Any] | None = None) -> CypherResult:
+    async def _run(self, query: str, params: Mapping[str, Any] | None = None, *, raw: bool = False) -> CypherResult:
         def _exec():
             qr = self._conn.execute(query, parameters=dict(params or {}))
             if isinstance(qr, list):
@@ -177,13 +284,35 @@ class KuzuStore(AutoCommitStore):
 
         async with self._lock:
             self._require_open()
+            self._statements += 1
             try:
+                if self._statements > _RECONNECT_EVERY:
+                    self._statements = 1
+                    if not (self._raw and await asyncio.to_thread(self._in_transaction)):
+                        self._conn = self._connect()
+                        self._raw = False
+                self._raw = self._raw or raw
                 columns, rows = await asyncio.to_thread(_exec)
                 return CypherResult(columns=columns, rows=rows)
-            except StoreError:
+            except SelfGraphError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 raise _kuzu_error(exc, "Kuzu query failed") from exc
+
+    def _in_transaction(self) -> bool:
+        """Report whether a raw statement left a transaction open on the connection.
+
+        Kuzu fixes current_timestamp() when a transaction starts, so two reads a clock tick apart match only inside
+        one. Reading it never ends the transaction.
+
+        @return (bool): True when a transaction is open.
+        """
+        first = self._conn.execute(_NOW).get_next()
+        time.sleep(_CLOCK_TICK)
+        return self._conn.execute(_NOW).get_next() == first
+
+    async def run_cypher(self, query: str, params: Mapping[str, JsonValue] | None = None) -> CypherResult:
+        return await self._run(query, params, raw=True)
 
     async def initialize(self) -> None:
         """Create the node and relationship tables if they do not exist."""
@@ -200,10 +329,7 @@ class KuzuStore(AutoCommitStore):
                 return
             self._closed = True
             self._conn.close()
-            _OPEN_STORES[self._path] -= 1
-            if _OPEN_STORES[self._path] == 0:
-                del _OPEN_STORES[self._path]
-                _DATABASES.pop(self._path).close()
+            _release_store(self._cache_key)
 
     async def get_node(self, ns: str, label: str, id: str) -> dict | None:
         res = await self._run(
@@ -235,6 +361,9 @@ class KuzuStore(AutoCommitStore):
         """
         if extra_label is not None:
             quote_label(extra_label)
+        for _, props in rows:
+            for key in props:
+                require_identifier(key)
         for _, batch in write_batches((None, {"pk": _pk(ns, id), "id": id, "doc": _jv(props)}) for id, props in rows):
             await self._run(_UPSERT_NODES, {"rows": batch, "ns": ns, "label": label})
 
@@ -252,6 +381,9 @@ class KuzuStore(AutoCommitStore):
         @param rows (list[tuple[str, str, str, dict]]): (edge type, source id, destination id, properties) rows.
         @return (None): nothing.
         """
+        for _type, _from_id, _to_id, props in rows:
+            for key in props:
+                require_identifier(key)
         edge_rows = [
             {
                 "f": _pk(ns, from_id),
@@ -291,7 +423,11 @@ class KuzuStore(AutoCommitStore):
         _where_doc_equals("n", equals, where, params)
         _where_doc_any_of(ns, any_of, where, params)
         where_after("n.id", id_gt, where, params)
-        ob = "n.id" if order_by == "id" else f"json_extract(n.doc, '{_safe_order_by(order_by)}')"
+        if order_by == "id":
+            ob = "n.id"
+        else:
+            col = require_identifier(order_by, "order_by")
+            ob = f"json_extract(n.doc, '{col}')"
         res = await self._run(
             f"MATCH (n:N) WHERE {' AND '.join(where)} "
             f"RETURN n.doc AS doc ORDER BY {ob} SKIP {int(skip)} LIMIT {int(limit)}",
@@ -338,7 +474,39 @@ class KuzuStore(AutoCommitStore):
         )
         return [edge_row(r) for r in res.rows]
 
+    async def edge_versions(
+        self, ns: str, from_label: str | None, to_label: str | None, ids: list[str]
+    ) -> list[dict] | None:
+        """Read edge versions for a bounded list of ids in one query.
+
+        @param ns (str): namespace.
+        @param from_label (str | None): source label, or None for any.
+        @param to_label (str | None): target label, or None for any.
+        @param ids (list[str]): edge ids.
+        @return (list[dict] | None): rows grouped by requested id, or None for more than 256 ids.
+        """
+        if len(ids) > 256:
+            return None
+        if not ids:
+            return []
+        where = ["r.ns = $ns", "r.sid IN $ids"]
+        params: dict[str, Any] = {"ns": ns, "ids": ids}
+        for alias, label in (("a", from_label), ("b", to_label)):
+            if label is not None:
+                where.append(f"{alias}.label = ${alias}_label")
+                params[f"{alias}_label"] = label
+        result = await self._run(
+            f"MATCH (a:N)-[r:R]->(b:N) WHERE {' AND '.join(where)} "
+            "RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et",
+            params,
+        )
+        rows = [edge_row(row) for row in result.rows]
+        order = {rid: i for i, rid in enumerate(ids)}
+        return sorted(rows, key=lambda row: order[row["props"]["id"]])
+
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
+        for key in props:
+            require_identifier(key)
         merged = await merged_current_edge(self, ns, id, props)
         if merged is None:
             return
@@ -402,11 +570,12 @@ class KuzuStore(AutoCommitStore):
         _where_doc_equals("r", equals, where, params)
         where_after("r.sid", id_gt, where, params)
         if order_by == "id":
-            ob = "r.sid"
+            ob = "r.sid, r.revision"
         elif order_by == "revision":
             ob = "r.revision"
         else:
-            ob = f"json_extract(r.doc, '{_safe_order_by(order_by)}')"
+            col = require_identifier(order_by, "order_by")
+            ob = f"json_extract(r.doc, '{col}')"
         res = await self._run(
             f"MATCH (a:N)-[r:R]->(b:N) WHERE {' AND '.join(where)} "
             f"RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et "
@@ -425,7 +594,8 @@ class KuzuStore(AutoCommitStore):
         *,
         order_by: str | None = None,
     ) -> list[dict]:
-        order = "" if order_by is None else f" ORDER BY json_extract(c.doc, '{_safe_order_by(order_by)}')"
+        ob = None if order_by is None else require_identifier(order_by, "order_by")
+        order = "" if ob is None else f" ORDER BY json_extract(c.doc, '{ob}')"
         res = await self._run(
             "MATCH (p:N {pk:$pk})-[r:R]->(c:N) "
             f"WHERE r.ns = $ns AND r.etype = $et AND c.label = $cl RETURN c.doc AS doc{order}",

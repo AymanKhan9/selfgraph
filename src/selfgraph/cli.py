@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
-import json
 import logging
 import os
 import sys
@@ -114,8 +113,8 @@ def _kv(pairs: list[str] | None, flag: str, *, text: bool = False) -> dict[str, 
             out[key] = value
             continue
         try:
-            out[key] = json.loads(value)
-        except json.JSONDecodeError:
+            out[key] = parse_json(value)
+        except ValidationError:
             out[key] = value
     return out
 
@@ -155,6 +154,32 @@ async def _retrieve(graph, args):
         skip_hubs=args.skip_hubs,
     )
     return _Text(result.context) if args.context_only else result
+
+
+async def _diff(graph, args):
+    result = await graph.diff(args.since, args.until)
+    if args.json:
+        return result
+    lines = [f"Changes ({result.since.isoformat()}, {result.until.isoformat()}]"]
+    lines += [f"Note: {limitation}" for limitation in result.limitations]
+    lines += [f"+ entity {e.id}" for e in result.entities_created]
+    lines += [
+        f"+ relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
+        for r in result.relations_added
+    ]
+    lines += [
+        f"~ relation {r.id} revision {r.revision}: {r.from_entity} -[{r.type}]-> {r.to_entity}"
+        for r in result.relations_revised
+    ]
+    lines += [
+        f"- relation {r.id}: {r.from_entity} -[{r.type}]-> {r.to_entity} invalidated_by={r.invalidated_by}"
+        for r in result.relations_retired
+    ]
+    lines.append(
+        f"{len(result.entities_created)} entities created, {len(result.relations_added)} relations added, "
+        f"{len(result.relations_revised)} revised, {len(result.relations_retired)} retired"
+    )
+    return _Text("\n".join(lines))
 
 
 async def _prune(graph, args):
@@ -453,6 +478,12 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("cypher")
     q.add_argument("--param", action="append", metavar="KEY=VALUE", help=f"query parameter (repeatable){_JSON_VALUE}")
     q.set_defaults(func=lambda g, a: checked_cypher(g, a.cypher, bind_params(a.cypher, _kv(a.param, "--param"))))
+
+    diff = sub.add_parser("diff", help="list stored changes by known time, in (since, until]")
+    diff.add_argument("--since", required=True, type=_time("since"), help="exclusive known-time lower bound (ISO 8601)")
+    diff.add_argument("--until", type=_time("until"), help="inclusive known-time upper bound (ISO 8601; default now)")
+    diff.add_argument("--json", action="store_true", help="print structured changes instead of a summary")
+    diff.set_defaults(func=_diff)
 
     rt = sub.add_parser("retrieve", help="retrieve graph context for a query; unquoted words join into one query")
     rt.add_argument("query", nargs="+")

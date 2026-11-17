@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 
+import UPPERCASE from "@unicode/unicode-15.0.0/Binary_Property/Uppercase/code-points.mjs";
 import { describe, expect, it } from "vitest";
 import { chunkByChars, chunkText, loadTokenizer } from "../src/chunking.js";
 import { errorReason, ValidationError } from "../src/errors.js";
 import { obsidianVault, toOssie } from "../src/export.js";
 import { NERExtractor } from "../src/extraction/basic.js";
-import { assembleExtraction, isNoiseName } from "../src/extraction/extractor.js";
+import { assembleExtraction, isNoiseName, lenientTime } from "../src/extraction/extractor.js";
 import {
   canonicalEntityId,
   contentHash,
@@ -90,8 +91,10 @@ describe("ids match Python byte for byte", () => {
   });
 
   it("relation types, control and surrogate characters, and quoted labels", () => {
-    for (const [input, expected] of Object.entries(fx.normalize_rel_type))
+    for (const [input, expected] of Object.entries(fx.normalize_rel_type)) {
       expect(normalizeRelType(input)).toBe(expected);
+      expect(normalizeRelType(expected as string), input).toBe(expected);
+    }
     for (const [bad, expected] of Object.entries(fx.bad_strings)) {
       expect(
         [attempt(() => entityId("Person", bad)), attempt(() => normalizeRelType(bad))],
@@ -147,11 +150,19 @@ describe("extraction, chunking, and retrieval helpers match Python", () => {
   it("token chunking and counting with cl100k_base", async () => {
     const { chunkText, countTokens } = await loadTokenizer();
     expect(chunkText(fx.chunks.text, { max_tokens: 64, overlap_tokens: 8 })).toEqual(fx.chunks.by_tokens);
+    const split = chunkText(fx.chunks.split_text, { max_tokens: 7, overlap_tokens: 2 });
+    expect(split).toEqual(fx.chunks.split_by_tokens);
+    const cps = Array.from(fx.chunks.split_text as string);
+    for (const chunk of split) expect(cps.slice(chunk.start_offset, chunk.end_offset).join("")).toBe(chunk.text);
     expect(chunkText(fx.chunks.text, { max_tokens: 16 })).toEqual(
       chunkText(fx.chunks.text, { max_tokens: 16, overlap_tokens: 4 }),
     );
     expect(chunkText(fx.chunks.text, { max_tokens: 1 }).length).toBeGreaterThan(0);
     expect(fx.extract.map((c: { text: string }) => countTokens(c.text))).toEqual(fx.chunks.count_tokens);
+  });
+
+  it("the regex extractor starts names at the same pinned Unicode 15.0 uppercase letters", () => {
+    expect(String.fromCodePoint(...UPPERCASE)).toBe(fx.uppercase);
   });
 
   it("the LLM-free regex extractor assembles the same facts", async () => {
@@ -166,6 +177,23 @@ describe("extraction, chunking, and retrieval helpers match Python", () => {
     expect(toJsonable(assembleExtraction(entities, relations, [], []))).toEqual(facts);
     for (const [name, expected] of Object.entries(fx.noise)) expect(isNoiseName(name), name).toBe(expected);
     for (const [props, expected] of fx.format_props) expect(formatProps(props)).toBe(expected);
+  });
+
+  it("lenientTime accepts a bare year and drops unparseable text", () => {
+    expect(toIso(lenientTime("2021"))).toBe("2021-01-01T00:00:00+00:00");
+    expect(toIso(lenientTime("0001"))).toBe("0001-01-01T00:00:00+00:00");
+    expect(lenientTime("0000")).toBeNull();
+    expect(lenientTime("March 2021")).toBeNull();
+    const facts = assembleExtraction(
+      [
+        { type: "Person", name: "Ann" },
+        { type: "Company", name: "Acme" },
+      ],
+      [{ from_name: "Ann", type: "JOINED", to_name: "Acme", event_time: "2021" }],
+      [],
+      [],
+    );
+    expect(toIso(facts.relations[0]!.event_time)).toBe("2021-01-01T00:00:00+00:00");
   });
 
   it("HydraDB 63-bit surrogate keys", () => {

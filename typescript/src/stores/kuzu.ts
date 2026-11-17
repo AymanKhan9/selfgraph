@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { errorMessage, StoreError, ValidationError } from "../errors.js";
+import { errorMessage, SelfGraphError, StoreError, ValidationError } from "../errors.js";
 import { Lazy } from "../internal/lazy.js";
 import { loadOptional } from "../internal/optional.js";
 import { pyJsonDumps, pyRepr, pyStr } from "../internal/py.js";
@@ -18,7 +18,15 @@ import {
   type UpsertNodeOptions,
 } from "../protocols.js";
 import { checkOptions, keysOf } from "../validate.js";
-import { AutoCommitStore, quoteLabel, sortedEntries, toCount, whereAfter, writeBatches } from "./cypherPrimitives.js";
+import {
+  AutoCommitStore,
+  quoteLabel,
+  requireIdentifier,
+  sortedEntries,
+  toCount,
+  whereAfter,
+  writeBatches,
+} from "./cypherPrimitives.js";
 import { docs, edgeRow, firstDoc, mergedCurrentEdge } from "./docRows.js";
 
 const SCHEMA = [
@@ -38,6 +46,7 @@ interface KuzuPreparedStatement {
 }
 
 interface KuzuConnection {
+  init(): Promise<void>;
   query(statement: string): Promise<KuzuQueryResult | KuzuQueryResult[]>;
   prepare(statement: string): Promise<KuzuPreparedStatement>;
   execute(
@@ -78,9 +87,23 @@ interface KuzuModule {
   Connection: new (db: KuzuDatabase) => KuzuConnection;
 }
 
-const DATABASES = new Map<string, KuzuDatabase>();
-const OPEN_STORES = new Map<string, number>();
+interface KuzuDatabaseOptions {
+  buffer_pool_size: number;
+  compression: boolean;
+  read_only: boolean;
+  max_db_size: number;
+}
+
+const DATABASES = new Map<string | symbol, KuzuDatabase>();
+const DATABASE_OPTIONS = new Map<string | symbol, KuzuDatabaseOptions>();
+const OPEN_STORES = new Map<string | symbol, number>();
+const WRITE_QUEUES = new Map<string | symbol, object>();
+const PATH_QUEUES = new Map<string | symbol, Promise<unknown>>();
 const MAX_SKIP = 10_000_000;
+const RECONNECT_EVERY = 500;
+const MAX_DB_SIZE_DEFAULT = 8_796_093_022_208;
+const NOW = "RETURN current_timestamp() AS now";
+const CLOCK_TICK_MS = 20;
 
 function normalize(value: unknown): unknown {
   if (value === null || value === undefined) return null;
@@ -159,8 +182,8 @@ function intLiteral(n: number): number {
  */
 function whereDocEquals(alias: string, equals: Props | null | undefined, where: string[], params: Props): void {
   sortedEntries(equals).forEach(([key, value], i) => {
-    where.push(`json_extract(${alias}.doc, $k${i}) = $v${i}`);
-    params[`k${i}`] = key;
+    where.push(`json_extract(${alias}.doc, $k${i}) = json($v${i})`);
+    params[`k${i}`] = requireIdentifier(key);
     params[`v${i}`] = jv(value);
   });
 }
@@ -180,12 +203,15 @@ function whereDocAnyOf(
   params: Props,
 ): void {
   sortedEntries(anyOf).forEach(([key, values], i) => {
+    requireIdentifier(key);
     const list = values as unknown[];
-    if (key === "id") {
+    if (list.length === 0) {
+      where.push("false");
+    } else if (key === "id") {
       where.push(`n.pk IN $in${i}`);
       params[`in${i}`] = list.map((v) => pk(ns, v as string));
     } else {
-      where.push(`CAST(json_extract(n.doc, $ik${i}) AS STRING) IN $in${i}`);
+      where.push(`CAST(json_extract(n.doc, $ik${i}) AS STRING) IN list_transform($in${i}, x -> json(x))`);
       params[`ik${i}`] = key;
       params[`in${i}`] = list.map(jv);
     }
@@ -195,6 +221,7 @@ function whereDocAnyOf(
 export class KuzuStore extends AutoCommitStore implements GraphStore {
   readonly queryLabels: readonly string[] = ["N", "R"];
   private readonly path: string;
+  private readonly cacheKey: string | symbol;
   private readonly conn = new Lazy<KuzuConnection>(async () => {
     const mod = await loadOptional<KuzuModule & { default?: KuzuModule }>(
       "kuzu",
@@ -202,33 +229,75 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
       StoreError,
     );
     const kuzu = mod.default ?? mod;
-    let db = DATABASES.get(this.path);
+    const o = this.options;
+    const options: KuzuDatabaseOptions = {
+      buffer_pool_size: o.buffer_pool_size ?? 0,
+      compression: o.compression ?? true,
+      read_only: o.read_only ?? false,
+      max_db_size: o.max_db_size ?? MAX_DB_SIZE_DEFAULT,
+    };
+    let db = DATABASES.get(this.cacheKey);
     if (db === undefined) {
       mkdirSync(dirname(this.path), { recursive: true });
-      const o = this.options;
       try {
         db = new kuzu.Database(
           this.path,
-          o.buffer_pool_size ?? 0,
-          o.compression ?? true,
-          o.read_only ?? false,
-          o.max_db_size ?? 0,
+          options.buffer_pool_size,
+          options.compression,
+          options.read_only,
+          options.max_db_size,
         );
       } catch (exc) {
         throw kuzuError(exc, `could not open Kuzu database ${pyRepr(this.path)}`);
       }
-      DATABASES.set(this.path, db);
+      DATABASES.set(this.cacheKey, db);
+      DATABASE_OPTIONS.set(this.cacheKey, options);
+    } else {
+      const open = DATABASE_OPTIONS.get(this.cacheKey);
+      const diffs = (Object.keys(options) as (keyof KuzuDatabaseOptions)[])
+        .filter((k) => o[k] !== undefined && o[k] !== open?.[k])
+        .sort()
+        .map((k) => `${k} ${pyRepr(open?.[k])} vs ${pyRepr(o[k])}`)
+        .join(", ");
+      if (diffs) {
+        throw new ValidationError(`KuzuStore(${pyRepr(this.path)}) is already open with different options: ${diffs}`);
+      }
     }
-    OPEN_STORES.set(this.path, (OPEN_STORES.get(this.path) ?? 0) + 1);
-    return new kuzu.Connection(db);
+    OPEN_STORES.set(this.cacheKey, (OPEN_STORES.get(this.cacheKey) ?? 0) + 1);
+    this.connect = () => new kuzu.Connection(db);
+    try {
+      const conn = this.connect();
+      await conn.init();
+      return conn;
+    } catch (exc) {
+      await KuzuStore.releaseStore(this.cacheKey);
+      throw exc;
+    }
   });
-  private queue: Promise<unknown> = Promise.resolve();
+  private connect!: () => KuzuConnection;
+  private statements = 0;
+  private raw = false;
+
+  /**
+   * Share one write queue with every store holding this cache key, since they share one database.
+   *
+   * @return (object): the key this store holds in the shared write-queue map, one per open database.
+   */
+  override writeQueueKey(): object {
+    let key = WRITE_QUEUES.get(this.cacheKey);
+    if (key === undefined) {
+      key = {};
+      WRITE_QUEUES.set(this.cacheKey, key);
+    }
+    return key;
+  }
 
   /**
    * An embedded, in-process Kuzu graph over a generic single-table schema.
    *
    * @param path (string): the database directory or file.
-   * @param options (KuzuStoreOptions): Kuzu database settings, used when this process first opens the path.
+   * @param options (KuzuStoreOptions): Kuzu database settings, applied when this process first opens the path;
+   *     a second store on the path must not pass different values.
    */
   constructor(
     path = "selfgraph_kuzu",
@@ -241,10 +310,22 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
       throw new ValidationError(`max_db_size must be a positive integer of bytes, got ${pyRepr(size)}`);
     }
     this.path = databasePath(path);
+    this.cacheKey = this.path === "" || this.path === ":memory:" ? Symbol() : this.path;
   }
 
-  private async exec(query: string, params?: Record<string, unknown> | null): Promise<CypherResult> {
-    const conn = await this.conn.get();
+  private async exec(query: string, params?: Record<string, unknown> | null, raw = false): Promise<CypherResult> {
+    let conn = await this.conn.get();
+    if (++this.statements > RECONNECT_EVERY && !this.closed) {
+      this.statements = 1;
+      if (!(this.raw && (await this.inTransaction(conn))) && !this.closed) {
+        const stale = conn;
+        conn = this.connect();
+        this.conn.set(conn);
+        this.raw = false;
+        await stale.close?.();
+      }
+    }
+    this.raw ||= raw;
     const res =
       params && Object.keys(params).length
         ? await conn.execute(await conn.prepare(query), params)
@@ -262,14 +343,55 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     }
   }
 
-  protected async _run(query: string, params?: Record<string, unknown> | null): Promise<CypherResult> {
+  /**
+   * Report whether a raw statement left a transaction open on the connection.
+   *
+   * Kuzu fixes current_timestamp() when a transaction starts, so two reads a clock tick apart match only inside one. Reading it never ends the transaction.
+   *
+   * @param conn (KuzuConnection): the connection.
+   * @return (boolean): true when a transaction is open.
+   */
+  private async inTransaction(conn: KuzuConnection): Promise<boolean> {
+    const now = async () => {
+      const res = (await conn.query(NOW)) as KuzuQueryResult;
+      try {
+        return JSON.stringify(await res.getAll());
+      } finally {
+        res.close?.();
+      }
+    };
+    const first = await now();
+    await new Promise((resolve) => setTimeout(resolve, CLOCK_TICK_MS));
+    return (await now()) === first;
+  }
+
+  override async runCypher(query: string, params?: Record<string, JsonValue> | null): Promise<CypherResult> {
+    return this._run(query, params, true);
+  }
+
+  /**
+   * Run a body in the per-database statement queue, beside the cached database, so every statement on the
+   * database, from every store sharing it, runs one at a time.
+   *
+   * @param fn (() => Promise<T>): the body.
+   * @return (Promise<T>): the body's result, once every statement ahead of it on the database has run.
+   */
+  private async onPath<T>(fn: () => Promise<T>): Promise<T> {
+    const key = this.cacheKey;
+    const run = (PATH_QUEUES.get(key) ?? Promise.resolve()).then(fn);
+    PATH_QUEUES.set(
+      key,
+      run.catch(() => undefined),
+    );
+    return run;
+  }
+
+  protected async _run(query: string, params?: Record<string, unknown> | null, raw = false): Promise<CypherResult> {
     this.requireOpen();
-    const run = this.queue.then(() => this.exec(query, params));
-    this.queue = run.catch(() => undefined);
     try {
-      return await run;
+      return await this.onPath(() => this.exec(query, params, raw));
     } catch (exc) {
-      if (exc instanceof StoreError) throw exc;
+      if (exc instanceof SelfGraphError) throw exc;
       throw kuzuError(exc, "Kuzu query failed");
     }
   }
@@ -285,24 +407,35 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
    * @param path (string): the database path.
    */
   static async closeDatabase(path: string): Promise<void> {
-    const key = databasePath(path);
+    await KuzuStore.closeCachedDatabase(databasePath(path));
+  }
+
+  private static async closeCachedDatabase(key: string | symbol): Promise<void> {
     const db = DATABASES.get(key);
     DATABASES.delete(key);
+    DATABASE_OPTIONS.delete(key);
+    WRITE_QUEUES.delete(key);
+    PATH_QUEUES.delete(key);
     await db?.close?.();
+  }
+
+  private static async releaseStore(key: string | symbol): Promise<void> {
+    const open = (OPEN_STORES.get(key) ?? 1) - 1;
+    if (open > 0) OPEN_STORES.set(key, open);
+    else {
+      OPEN_STORES.delete(key);
+      await KuzuStore.closeCachedDatabase(key);
+    }
   }
 
   /** Close the connection, and the database once no other store in this process holds it. */
   async close(): Promise<void> {
     this.closed = true;
     await this.conn.release(async (conn) => {
-      await this.queue;
-      await conn.close?.();
-      const open = (OPEN_STORES.get(this.path) ?? 1) - 1;
-      if (open > 0) OPEN_STORES.set(this.path, open);
-      else {
-        OPEN_STORES.delete(this.path);
-        await KuzuStore.closeDatabase(this.path);
-      }
+      await this.onPath(async () => {
+        await conn.close?.();
+      });
+      await KuzuStore.releaseStore(this.cacheKey);
     });
   }
 
@@ -330,6 +463,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     options: UpsertNodeOptions = {},
   ): Promise<void> {
     if (options.extra_label != null) quoteLabel(options.extra_label);
+    for (const key of Object.keys(props)) requireIdentifier(key);
     await this._run("MERGE (n:N {pk:$pk}) SET n.id = $id, n.ns = $ns, n.label = $label, n.doc = $doc", {
       pk: pk(ns, id),
       id,
@@ -354,6 +488,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     options: UpsertNodeOptions = {},
   ): Promise<void> {
     if (options.extra_label != null) quoteLabel(options.extra_label);
+    for (const [, props] of rows) for (const key of Object.keys(props)) requireIdentifier(key);
     for (const [, batch] of writeBatches(
       rows.map(([id, props]) => [null, { pk: pk(ns, id), id, doc: jv(props) }] as const),
     )) {
@@ -377,6 +512,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     toLabel: string,
     rows: readonly EdgeWrite[],
   ): Promise<void> {
+    for (const [, , , props] of rows) for (const k of Object.keys(props)) requireIdentifier(k);
     const keyed = rows.map(([type, fromId, toId, props]) => {
       const row = {
         f: pk(ns, fromId),
@@ -446,6 +582,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
   ): Promise<boolean> {
     if (!(await this.nodeExists(ns, fromLabel, fromId))) return false;
     if (!(await this.nodeExists(ns, toLabel, toId))) return false;
+    for (const k of Object.keys(props)) requireIdentifier(k);
     const sid = props.id ?? null;
     const rev = props.revision ?? null;
     const params = {
@@ -483,7 +620,45 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     return res.rows.map(edgeRow);
   }
 
+  /**
+   * Read edge versions for a bounded list of ids in one query.
+   *
+   * @param ns (string): namespace.
+   * @param fromLabel (string | null): source label, or null for any.
+   * @param toLabel (string | null): target label, or null for any.
+   * @param ids (readonly string[]): edge ids.
+   * @return (Promise<EdgeRow[] | null>): rows grouped by requested id, or null for more than 256 ids.
+   */
+  async edgeVersions(
+    ns: string,
+    fromLabel: string | null,
+    toLabel: string | null,
+    ids: readonly string[],
+  ): Promise<EdgeRow[] | null> {
+    if (ids.length > 256) return null;
+    if (!ids.length) return [];
+    const where = ["r.ns = $ns", "r.sid IN $ids"];
+    const params: Props = { ns, ids };
+    for (const [alias, label] of [
+      ["a", fromLabel],
+      ["b", toLabel],
+    ] as const) {
+      if (label !== null) {
+        where.push(`${alias}.label = $${alias}_label`);
+        params[`${alias}_label`] = label;
+      }
+    }
+    const result = await this._run(
+      `MATCH (a:N)-[r:R]->(b:N) WHERE ${where.join(" AND ")} ` +
+        "RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et",
+      params,
+    );
+    const order = new Map(ids.map((id, i) => [id, i]));
+    return result.rows.map(edgeRow).sort((a, b) => order.get(a.props.id as string)! - order.get(b.props.id as string)!);
+  }
+
   async updateCurrentEdge(ns: string, id: string, props: Props): Promise<void> {
+    for (const k of Object.keys(props)) requireIdentifier(k);
     const merged = await mergedCurrentEdge(this, ns, id, props);
     if (merged === null) return;
     await this._run(`${BY_SID} AND r.is_current = true SET r.doc = $doc, r.is_current = $isc, r.revision = $rev`, {
@@ -554,7 +729,7 @@ export class KuzuStore extends AutoCommitStore implements GraphStore {
     const res = await this._run(
       `MATCH (a:N)-[r:R]->(b:N) WHERE ${where.join(" AND ")} ` +
         `RETURN r.doc AS doc, a.id AS fa, b.id AS tb, r.etype AS et ` +
-        `ORDER BY r.sid SKIP ${intLiteral(skip)} LIMIT ${intLiteral(limit)}`,
+        `ORDER BY r.sid, r.revision SKIP ${intLiteral(skip)} LIMIT ${intLiteral(limit)}`,
       params,
     );
     return res.rows.map(edgeRow);

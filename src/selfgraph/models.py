@@ -1,14 +1,17 @@
+import json
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from types import UnionType
-from typing import Any, ClassVar, Generic, Literal, TypeVar, Union, get_args, get_origin
+from typing import Annotated, Any, ClassVar, Generic, Literal, TypeVar, Union, get_args, get_origin
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     JsonValue,
     SerializerFunctionWrapHandler,
+    StrictFloat,
     field_validator,
     model_serializer,
     model_validator,
@@ -24,6 +27,7 @@ __all__ = [
     "Entity",
     "Certification",
     "Relation",
+    "GraphDiff",
     "Preference",
     "DecisionStep",
     "DecisionTrace",
@@ -393,6 +397,16 @@ class Relation(BaseModel):
     certifications: list[Certification] = Field(default_factory=list)
 
 
+class GraphDiff(BaseModel):
+    since: datetime
+    until: datetime
+    relations_added: list[Relation] = Field(default_factory=list)
+    relations_retired: list[Relation] = Field(default_factory=list)
+    relations_revised: list[Relation] = Field(default_factory=list)
+    entities_created: list[Entity] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=lambda: ["Deletes and merges are not visible."])
+
+
 class Preference(BaseModel):
     id: str
     revision: int
@@ -504,6 +518,7 @@ class DeleteResult(BaseModel):
     deleted_relation_versions: int = 0
     deleted_decisions: int = 0
     deleted_preference_versions: int = 0
+    restored_relations: int = 0
 
 
 class DecayResult(BaseModel):
@@ -596,6 +611,27 @@ class EntityInput(InputModel):
     _clean_json = _check(_require_clean_json, "entity property and external id", "external_ids", "properties")
 
 
+def _facts_time(value: Any) -> Any:
+    """Read a facts time the way parse_time reads every other time argument, with the TypeScript port's errors.
+
+    @param value (Any): a datetime, ISO 8601 text, or None.
+    @return (Any): the datetime, or None; raises ValueError for any other type or for text that is not ISO 8601.
+    """
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise ValueError("Invalid input")
+    from ._ops import parse_time
+
+    try:
+        return parse_time(value, "event_time")
+    except ValidationError as exc:
+        raise ValueError(f"Invalid ISO 8601 string: {json.dumps(value, ensure_ascii=False)}") from exc
+
+
+FactsTime = Annotated[datetime | None, BeforeValidator(_facts_time)]
+
+
 class EvidenceInput(InputModel):
     input_label: ClassVar[str] = "evidence"
 
@@ -604,7 +640,7 @@ class EvidenceInput(InputModel):
     quote: str | None = None
     start_offset: int | None = None
     end_offset: int | None = None
-    confidence: float | None = None
+    confidence: StrictFloat | None = None
 
     _clean_source_id = _check(_require_no_control, "evidence source_id", "source_id")
 
@@ -638,7 +674,7 @@ class RelationInput(InputModel):
     type: str
     to_entity: str
     properties: dict[str, JsonValue] = Field(default_factory=dict)
-    event_time: datetime | None = None
+    event_time: FactsTime = None
     evidence: list[EvidenceInput] = Field(default_factory=list)
 
     @field_validator("type")
@@ -658,9 +694,9 @@ class PreferenceInput(InputModel):
     key: str
     value_entity: str
     about_entity: str | None = None
-    strength: float | None = None
+    strength: StrictFloat | None = None
     properties: dict[str, JsonValue] = Field(default_factory=dict)
-    event_time: datetime | None = None
+    event_time: FactsTime = None
 
     _clean_key = _check(_require_no_control, "preference key", "key")
     _clean_json = _check(_require_clean_json, "preference property", "properties")
@@ -678,7 +714,7 @@ class DecisionTraceInput(InputModel):
     outcome_entity: str | None = None
     alternative_entities: list[str] = Field(default_factory=list)
     status: Status | None = None
-    event_time: datetime | None = None
+    event_time: FactsTime = None
 
 
 class Extraction(TopInputModel):

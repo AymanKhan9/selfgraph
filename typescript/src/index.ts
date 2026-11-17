@@ -47,6 +47,7 @@ export {
   Extraction,
   ExtractionInstructions,
   ExtractionPrompts,
+  type GraphDiff,
   type InsertResult,
   type InsertWarning,
   type JsonObject,

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { KuzuStore, SelfGraph } from "../src/index.js";
+import { ids, KuzuStore, SelfGraph } from "../src/index.js";
 import type { Schema } from "../src/schema.js";
 import { conformanceStore, dump, SUPERSEDE_SCHEMA, schemaWarnings, supersede, write } from "./conformance/ts_side.js";
 import { reachable, selectedStores, tempKuzu, uniqueNs } from "./helpers.js";
@@ -15,7 +15,7 @@ const PY = process.env.SELFGRAPH_PY;
 const SCRIPT = fileURLToPath(new URL("./conformance/py_side.py", import.meta.url));
 const KUZU = tempKuzu("selfgraph-conf-");
 
-function py(cmd: "write" | "dump" | "schema" | "supersede", store: string, ns: string): unknown {
+function py(cmd: "write" | "dump" | "schema" | "supersede" | "kuzu_isolation", store: string, ns: string): unknown {
   const out = execFileSync(PY!, [SCRIPT, cmd, store, ns, KUZU], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   return JSON.parse(out);
 }
@@ -63,7 +63,9 @@ function mask(value: unknown): unknown {
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).map(([k, v]) => {
-        if (k === "created_at" || k === "updated_at") return [k, "<ts>"];
+        if (k === "invalidated_at" && String((value as Record<string, unknown>).invalidated_by).startsWith("sv:"))
+          return [k, "<ts>"];
+        if (["created_at", "updated_at", "invalidated_known_at", "since", "until"].includes(k)) return [k, "<ts>"];
         if (k === "ns") return [k, "<ns>"];
         if (k === "message") return [k, "<message>"];
         if (k === "evidence_json" && typeof v === "string") return [k, mask(v)];
@@ -95,6 +97,32 @@ const live = new Map<string, boolean>();
 for (const spec of specs) live.set(spec.name, await reachable(spec));
 
 describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
+  it.skipIf(!live.get("kuzu"))("isolates anonymous Kuzu databases in both languages", async () => {
+    const result: (boolean | string)[] = [];
+    for (const path of ["", ":memory:"]) {
+      await using first = new SelfGraph(new KuzuStore(path));
+      await using second = new SelfGraph(new KuzuStore(path));
+      const entity = await first.entities.create("Jane", "Person");
+      result.push((await second.entities.get(entity.id)) === null);
+      await second.insert.facts({ entities: [{ name: "Jane", type: "Person" }] });
+      await second.entities.delete(entity.id);
+      result.push((await first.entities.get(entity.id))?.id === entity.id);
+    }
+    const shared = new KuzuStore(KUZU);
+    await shared.initialize();
+    for (const options of [{ read_only: true }, { read_only: true, max_db_size: 1024 }]) {
+      try {
+        await new KuzuStore(KUZU, options).initialize();
+        result.push("no error");
+      } catch (exc) {
+        result.push(exc instanceof Error ? exc.message : String(exc));
+      }
+    }
+    await shared.close();
+    expect(result.slice(0, 4)).toEqual([true, true, true, true]);
+    expect(py("kuzu_isolation", "-", "-")).toEqual(result);
+  });
+
   it("schema validation produces identical warnings in both languages", () => {
     expect(schemaWarnings()).toEqual(py("schema", "-", "-"));
   });
@@ -109,6 +137,10 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
       expect(mask(fromTs)).toEqual(mask(fromPy));
       const ended = Object.values((fromTs as { versions: Record<string, unknown[][]> }).versions).map((v) => v[0]![3]);
       expect(ended.filter((at) => at !== null).sort()).toEqual(["2022-01-01T00:00:00Z", "2026-01-01T00:00:00Z"]);
+      expect((fromTs as { undated_correction: unknown[][] }).undated_correction.map((v) => v[2])).toEqual([
+        true,
+        false,
+      ]);
     });
 
     it.skipIf(!live.get(store))(
@@ -119,12 +151,34 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
 
         const pyOps = py("write", store, nsPy);
         const tsOps = await ts(store, nsTs, write);
+        expect(tsOps.dedupe_conflicts).toEqual({ "relation:touch-b": ["active", "flags"] });
+        expect(tsOps.facts_none).toBe("invalid facts: expected object");
+        for (const ops of [pyOps, tsOps]) {
+          const names = (ops as { unicode_text: { entities: { name: string }[] } }).unicode_text.entities.map(
+            (entity) => entity.name,
+          );
+          expect(names).toEqual(expect.arrayContaining(["Émile Zola", "Łukasz Nowak"]));
+        }
 
         const pyReadsPy = py("dump", store, nsPy);
         const tsReadsPy = await ts(store, nsPy, (g) => dump(g, nsPy));
+        expect(pyReadsPy).toMatchObject({
+          known_at_sources: { seeds: ["database:hydradb"], counts: { "database:hydradb": 1, "company:acme": 1 } },
+        });
 
         const tsReadsTs = await ts(store, nsTs, (g) => dump(g, nsTs));
         const pyReadsTs = py("dump", store, nsTs);
+        if (store === "kuzu") {
+          for (const snapshot of [pyReadsPy, tsReadsPy, tsReadsTs, pyReadsTs]) {
+            expect(snapshot).toMatchObject({
+              filters: {
+                aliases_equals: [{ id: "person:jane-doe" }],
+                aliases_any_of: [{ id: "person:jane-doe" }],
+                empty_any_of: [],
+              },
+            });
+          }
+        }
 
         const evidence = mkdtempSync(join(tmpdir(), `selfgraph-conformance-${store}-`));
         const keep = { pyOps, tsOps, pyReadsPy, tsReadsPy, tsReadsTs, pyReadsTs };
@@ -142,6 +196,32 @@ describe.skipIf(!PY)("cross-language conformance with the Python SDK", () => {
           mask(roundFloats(bySource(pyReadsPy))),
         );
         expect(mask(tsOps), `both libraries return the same results ${where}`).toEqual(mask(pyOps));
+        const dec = ids.decisionId("person:jane-doe", "Pick HydraDB");
+        const step = ids.stepId(dec, 0);
+        for (const ops of [pyOps, tsOps]) {
+          expect((ops as { dec_retry: unknown }).dec_retry).toEqual({
+            links: [
+              ["CONSIDERED", dec, "database:postgres"],
+              ["FROM", step, "company:acme"],
+              ["MADE_DECISION", "person:jane-doe", dec],
+              ["RESULTED_IN", dec, "database:hydradb"],
+              ["TO", step, "database:hydradb"],
+            ],
+            unchanged: true,
+          });
+        }
+        if (store === "hydradb") {
+          for (const ops of [pyOps, tsOps]) {
+            expect((ops as { extra_label: unknown }).extra_label).toEqual({
+              primary: "extra:batch-1",
+              batch_extra: "extra:batch-2",
+              single_extra: "extra:single",
+            });
+          }
+        }
+        for (const ops of [pyOps, tsOps]) {
+          expect((ops as { large_document: unknown }).large_document).toEqual({ entity: 40_000, relation: 40_000 });
+        }
         rmSync(evidence, { recursive: true, force: true });
       },
     );

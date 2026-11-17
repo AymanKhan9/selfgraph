@@ -62,6 +62,16 @@ def test_relation_types_split_camel_case():
     assert ids.relation_id("a:b", "worksAt", "c:d") == ids.relation_id("a:b", "WORKS_AT", "c:d")
 
 
+def test_a_normalized_relation_type_normalizes_to_itself():
+    assert ids.normalize_rel_type("uses k8s") == ids.normalize_rel_type("USES_K8S") == "USES_K8_S"
+    assert ids.normalize_rel_type("has 3d model") == "HAS_3_D_MODEL"
+    assert ids.normalize_rel_type("Has2FA") == "HAS2_FA"
+    for raw in ["uses k8s", "has 2fa", "isPartOf2Things", "x2ß", "ß\u0307", "56İ", "OAuth2Token", "élève de"]:
+        once = ids.normalize_rel_type(raw)
+        assert ids.normalize_rel_type(once) == once, raw
+        assert ids.relation_id("a:b", raw, "c:d") == ids.relation_id("a:b", once, "c:d")
+
+
 def test_combining_marks_stay_in_derived_ids():
     names = ["राम", "रीमा", "रोम", "กิน", "กัน", "কাল", "কুল", "கவி", "கவு", "דָּוִד", "דּוֹד"]
     derived = [ids.entity_id("Person", name) for name in names]
@@ -96,3 +106,14 @@ def test_combining_marks_follow_one_pinned_table():
         if unicodedata.category(chr(cp)) in ("Mn", "Mc") and not (0xFE00 <= cp <= 0xFE0F or 0xE0100 <= cp <= 0xE01EF)
     }
     assert {cp for cp in range(sys.maxunicode + 1) if ids._is_mark(chr(cp))} == marks
+
+
+def test_require_identifier_accepts_plain_identifiers():
+    for name in ("id", "sid", "index", "external_ids", "name", "k_Entity_1"):
+        assert ids.require_identifier(name) == name
+
+
+def test_require_identifier_rejects_injection_and_non_identifiers():
+    for bad in ("id` RETURN 1 //", "a`b", "a b", "1name", "na.me", "", "n`) DETACH DELETE (m"):
+        with pytest.raises(ValidationError):
+            ids.require_identifier(bad)

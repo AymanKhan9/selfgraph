@@ -3,6 +3,7 @@ import io
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 import pytest
 from helpers import (
@@ -22,9 +23,10 @@ from helpers import (
 )
 
 import selfgraph
+from selfgraph._serde import from_iso
 from selfgraph.cli import _metadata, build_parser, main
 from selfgraph.errors import ValidationError
-from selfgraph.runtime import parse_time
+from selfgraph.runtime import parse_time, read_json
 
 
 def test_insert_facts_then_read(capsys, tmp_path):
@@ -48,6 +50,20 @@ def test_entity_create_parses_props_and_aliases(capsys):
     assert out["id"] == "t:a"
     assert out["aliases"] == ["Ay"]
     assert out["properties"] == {"score": 1, "tag": "x"}
+
+
+def test_nan_and_infinity_are_text_in_flags_and_invalid_json_in_files(capsys, tmp_path):
+    g = new_graph()
+    argv = ["entity", "create", "--name", "A", "--type", "T", "--id", "t:a"]
+    out = cli(g, [*argv, "--prop", "a=NaN", "--prop", "b=Infinity", "--prop", "c=-Infinity"], capsys)
+    assert out["properties"] == {"a": "NaN", "b": "Infinity", "c": "-Infinity"}
+    assert _metadata(["n=NaN"]) == {"n": "NaN"}
+    with pytest.raises(ValidationError, match="^invalid JSON in --metadata: Infinity is not a JSON value$"):
+        _metadata(['{"n": Infinity}'])
+    path = tmp_path / "facts.json"
+    path.write_text('{"entities": [{"type": "T", "name": "W", "properties": {"x": NaN}}]}', encoding="utf-8")
+    with pytest.raises(ValidationError, match="^invalid JSON in '.*facts.json': NaN is not a JSON value$"):
+        read_json(str(path))
 
 
 def test_relation_create_update_versions(capsys):
@@ -197,6 +213,8 @@ def test_global_flags_after_the_subcommand(capsys, tmp_path):
 def test_time_flags_share_one_parser(capsys):
     for text in ("2024-01-02T00:00:00Z", "2024-01-02", "2024-01-02T00:00:00", "2024-01-02T01:00:00+01:00"):
         assert parse_time(text, "event_time") == utc(2024, 1, 2)
+    for text in ("2024-01-02T00:00:00Z", "2024-01-02T00:00:00z"):
+        assert from_iso(text) == utc(2024, 1, 2)
     with pytest.raises(ValidationError, match="invalid now: 'soon' is not an ISO 8601 date or time"):
         parse_time("soon", "now")
     g = fresh_graph("cli-time")
@@ -207,6 +225,28 @@ def test_time_flags_share_one_parser(capsys):
     with pytest.raises(SystemExit):
         cli(g, ["relation", "create", "t:a", "KNOWS", "t:b", "--event-time", "soon"], capsys)
     assert "is not an ISO 8601 date or time" in capsys.readouterr().err
+
+
+def test_time_arguments_read_one_iso_grammar_on_every_python():
+    accepted = {
+        "2021-03-04T10:15:00,5": datetime(2021, 3, 4, 10, 15, 0, 500000, tzinfo=timezone.utc),
+        "2021-03-04T10:15:00.123456789Z": datetime(2021, 3, 4, 10, 15, 0, 123456, tzinfo=timezone.utc),
+        "2021-03-04T10:15:00+0530": datetime(2021, 3, 4, 4, 45, tzinfo=timezone.utc),
+        "2021-03-04T10:15:00+05": datetime(2021, 3, 4, 5, 15, tzinfo=timezone.utc),
+        "2021-03-04T10:15:00 -05:30:15": datetime(2021, 3, 4, 15, 45, 15, tzinfo=timezone.utc),
+    }
+    for text, want in accepted.items():
+        assert parse_time(text, "as_of") == want, text
+    rejected = ["20210304", "2021-W09-4", "2021-063", "2021-03-04T1015", "2021-03-04X10:15:00"]
+    rejected += ["2021-03-04T10:15:00+24:00", "2021-03-04T10:15:00+05:60", "2021-03-04T10:15:00\u00a0+05:30"]
+    for text in rejected:
+        with pytest.raises(ValidationError, match="is not an ISO 8601 date or time"):
+            parse_time(text, "as_of")
+    schema = {"entities": [{"name": "Company", "properties": [{"name": "founded", "type": "datetime"}]}]}
+    g = fresh_graph("iso", schema=schema, schema_mode="strict")
+    run(g.entities.create("Acme", "Company", properties={"founded": "2021-03-04T10:15:00+0530"}))
+    with pytest.raises(ValidationError):
+        run(g.entities.create("Globex", "Company", properties={"founded": "20210304"}))
 
 
 def test_schema_formats_default_to_neo4j_and_bare_schema_hints(capsys, tmp_path):
@@ -284,6 +324,23 @@ def test_bad_facts_and_schema_files_fail_cleanly_and_warnings_reach_stderr(capsy
     captured = capsys.readouterr()
     assert "selfgraph: unknown_entity_type: entity company:b has unknown type 'Company'\n" in captured.err
     assert json.loads(captured.out)["warnings"][0]["code"] == "unknown_entity_type"
+
+
+def test_null_facts_file_fails_cleanly(capsys, tmp_path):
+    null = json_file(tmp_path, "null.json", None)
+    assert kuzu_main(tmp_path, "insert", "facts", null) == 2
+    assert capsys.readouterr().err == "error: invalid facts: expected object\n"
+
+
+def test_facts_file_with_a_bare_year_or_a_text_strength_fails_like_typescript(capsys, tmp_path):
+    rel = {"from_entity": "person:ann", "type": "JOINED", "to_entity": "company:acme", "event_time": "2021"}
+    pref = {"subject_entity": "person:ann", "key": "k", "value_entity": "company:acme", "strength": "0.9"}
+    bad = json_file(tmp_path, "bad.json", {"relations": [rel], "preferences": [pref]})
+    assert kuzu_main(tmp_path, "insert", "facts", bad) == 2
+    err = capsys.readouterr().err
+    assert "error: invalid facts:\n" in err
+    assert '  relations[0].event_time: invalid ISO 8601 string: "2021"\n' in err
+    assert "  preferences[0].strength: expected number\n" in err
 
 
 def test_relation_update_aliases_and_dry_run_plans_omit_deleted(capsys):

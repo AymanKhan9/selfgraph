@@ -54,6 +54,8 @@ cluster-only option that a standalone server rejects.
 
 - It expands a leading `~` and creates the file's folder if needed.
 - With no path, it opens `selfgraph_kuzu` in the current directory.
+- An empty path or `:memory:` opens a separate in-memory database for each store.
+  Stores opened on the same file path share that file's database instead.
 - Each open Kuzu database reserves 8 TB of virtual memory by default, so a
   process holding many can run out of address space. Pass `max_db_size` (a
   positive integer of bytes), as in `KuzuStore("graph.kuzu", max_db_size=1 << 30)`,
@@ -124,21 +126,25 @@ backends.
 - It can write, as can `selfgraph query`. Only the MCP `run_cypher` tool is
   read-only.
 - `result.counters` is always empty on Kuzu.
+- The Kuzu store reopens its connection every 500 statements to free the memory
+  Kuzu keeps per statement, so a `CALL` setting or `USE` may not last until a
+  later statement. It does not reopen while a raw transaction is open.
 
 Every SelfGraph node carries a kind label: `Entity`, `Profile`, `DecisionTrace`,
 `DecisionStep`, `Source`, `SourceVersion`, `Chunk`, `Evidence`, `EntityMerge`, or
 `EntityMergeEntry` (one source or rewrite of a merge record, so a record stays small when a merge repeats).
-The entity type is the `type` property. Only Neo4j, Memgraph, and FalkorDB also
-add it as a second label.
+The entity type is the `type` property. Neo4j, Memgraph, and FalkorDB also add it
+as a second label. HydraDB adds it only when HydraDB accepts it as a label, that is
+when it uses ASCII letters, digits, `_`, `.`, or `-`.
 
 | | Neo4j, Memgraph, FalkorDB | Kuzu | HydraDB |
 |---|---|---|---|
-| Node label | `Entity` and the type, e.g. `Person` | table `N`; kind in `n.label` | `Entity` only |
+| Node label | `Entity` and the type, e.g. `Person` | table `N`; kind in `n.label` | `Entity`, and the type when it is a valid HydraDB label |
 | SelfGraph id | `n.id` | `n.id` | `n.sid` (`n.id` is an internal integer) |
 | Namespace | `n.ns` | `n.ns` | `n.ns` |
 | Other fields | properties such as `n.type`, `n.name`, `n.properties_json` | JSON in `n.doc`, read with `json_extract(n.doc, 'name')` | scalar properties such as `n.type`, `n.name`; the full record as JSON in `n.doc` |
 | Relation | the relation type, e.g. `[r:WORKS_AT]` | table `R`; type in `r.etype` | `[r:RELATES]`; type in `r.etype` |
-| `MATCH (n:Person)` | matches | error, no such table | returns nothing |
+| `MATCH (n:Person)` | matches | error, no such table | matches; a type that is not a valid HydraDB label, such as `Big Co`, is rejected as a label, so filter on `n.type` |
 
 - Relations keep every version. Add `r.is_current = true` to read only the
   current one.

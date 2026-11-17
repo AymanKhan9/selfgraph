@@ -96,7 +96,7 @@ are reserved in any case and raise `ValidationError`:
 
 - entity types `Entity`, `Profile`, `DecisionTrace`, `DecisionStep`, `Source`,
   `SourceVersion`, `Chunk`, `Evidence`, `EntityMerge`, and `EntityMergeEntry`;
-- entity id prefixes `relation:`, `preference:`, `decision:`, `profile:`,
+- entity id prefixes `relation:`, `preference:`, `decision:`, `decisionstep:`, `profile:`,
   `source:`, `sv:`, `evidence:`, and `entitymerge:`.
 
 ### Updating and deleting
@@ -124,6 +124,26 @@ and any decision trace that references it. Two exceptions:
 - A decision that only considered it as an alternative drops that alternative.
 - A preference only about it gets a new version without `about_entity`.
 
+Deleting a relation at an endpoint the schema's `max_count` constrains settles
+that endpoint again, as [`supersede`](schema.md#contradictions) would have
+settled it without the deleted relation. This covers `relations.delete`, a
+relation removed with an entity, and `maintenance.prune`.
+
+- Every relation `supersede` retired there is ranked again with the current ones,
+  and the newest `max_count` stay current. Each one is settled at both of its
+  endpoints, with retired relations counted, as an insert settles it, so a
+  relation still displaced at its other endpoint stays retired.
+- A retired relation that makes the cut comes back as a new current revision
+  with its old properties and its original effective time, so `as_of` reads show
+  it valid from its start. `restored_relations` in the delete result counts them.
+- A retired relation that does not make the cut stays retired. It takes a new
+  revision whose `invalidated_by` and `invalidated_at` name the relation that now
+  displaces it, so they never name a deleted relation.
+- A retirement by the [LLM judge](schema.md#llm-judged-contradictions) or by
+  [`replace_source`](inserting.md#replacing-a-source) is left as it is.
+- Older versions are not changed. A `known_at` read from before the delete still
+  shows the relation retired.
+
 ## Evidence
 
 Page through evidence with `entities.evidence(id, cursor=None, limit=50)` or
@@ -150,7 +170,9 @@ await graph.relations.evidence(rel.id)        # Page of Evidence, all versions
 - `create` asserts the fact now, with exactly the given properties.
 - `update` writes a new version and keeps the old ones.
 - A relation type is normalized to UPPER_SNAKE, splitting camelCase. `works at`,
-  `worksAt`, and `WORKS_AT` are one type, and `HTTPServer` is `HTTP_SERVER`.
+  `worksAt`, and `WORKS_AT` are one type, and `HTTPServer` is `HTTP_SERVER`. A
+  digit and the letter after it split too, so `uses k8s` and `USES_K8S` are both
+  `USES_K8_S`. Normalizing a stored type again returns it unchanged.
 - The types `PREFERS`, `AVOIDS`, `HAS_PROFILE`, `MADE_DECISION`, `HAS_STEP`,
   `FROM`, `TO`, `RESULTED_IN`, `CONSIDERED`, `HAS_VERSION`, and `HAS_CHUNK` are
   reserved in any case. Use the preference and decision resources, or another

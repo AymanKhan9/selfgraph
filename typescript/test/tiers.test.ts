@@ -176,6 +176,34 @@ function suite(spec: StoreSpec): void {
     expect(late.prompts).toEqual([]);
   });
 
+  it("LLM judge excludes unchanged relations in a mixed batch", async () => {
+    const judge = new Judge();
+    const g = open({ llm: judge, extraction: "regex", contradiction: "llm" });
+    const both = [annAt("acme", 2020), annAt("globex", 2022)];
+    await g.insert.facts({ entities: ANN_ACME_GLOBEX, relations: both });
+    expect((await g.insert.facts({ relations: both })).warnings).toEqual([]);
+    expect(judge.prompts).toEqual([]);
+    const changed = [both[0]!, { ...both[1]!, properties: { role: "lead" } }];
+    const result = await g.insert.facts({ relations: changed });
+    expect(judge.prompts).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(result.relations.map((r) => [r.revision, r.is_current])).toEqual([
+      [1, true],
+      [2, true],
+    ]);
+    expect((await g.relations.get(ACME))?.is_current).toBe(true);
+    expect((await g.relations.get(GLOBEX))?.is_current).toBe(true);
+    expect((await g.insert.facts({ relations: changed })).warnings).toEqual([]);
+    expect(judge.prompts).toEqual([]);
+    await g.entities.create("Initech", "Company");
+    const external = await g.insert.facts({ relations: [annAt("initech", 2024)] });
+    expect(judge.prompts).toHaveLength(1);
+    expect(judge.prompts[0]).toContain("Ann -[WORKS_AT]-> Acme");
+    expect(judge.prompts[0]).toContain("Ann -[WORKS_AT]-> Globex");
+    expect(external.warnings.map((w) => w.code)).toEqual(["relation_superseded"]);
+    expect((await g.relations.list()).items).toHaveLength(2);
+  });
+
   it("LLM judge leaves cardinality types to the schema rule and judges other types", async () => {
     const judge = new Judge();
     const schema: Schema = { relations: [{ type: "WORKS_AT", from: { max_count: 1 } }] };
@@ -275,6 +303,37 @@ function suite(spec: StoreSpec): void {
     expect((await g.retrieve("which employers are there", { seeds: "bm25" })).seeds).toEqual([]);
     expect((await open().retrieve("which employers")).tiers.seeds).toBe("bm25");
     await expect(g.retrieve("x", { seeds: "embeddings" })).rejects.toThrow(/seeds 'embeddings' needs an embedder/);
+  });
+
+  it("synonym seeding expands parent types and definitions to subtypes", async () => {
+    const hierarchy: Schema = {
+      entities: [
+        {
+          name: "Employee",
+          aliases: ["Worker"],
+          synonyms: ["staff"],
+          definitions: [{ name: "Active Staff", expression: "active = true", synonyms: ["personnel"] }],
+        },
+        { name: "Engineer", parent: "Employee" },
+        { name: "PrincipalEngineer", parent: "Engineer" },
+      ],
+    };
+    const g = open({ schema: hierarchy });
+    await g.entities.create("Ann", "PrincipalEngineer");
+    for (const question of [
+      "Who are the Employees?",
+      "Who are the Workers?",
+      "Who are the staff?",
+      "Who are the personnel?",
+    ]) {
+      expect((await g.checkAnswerable(question)).verdict, question).toBe("answerable");
+      const found = await g.retrieve(question, { seeds: "synonyms" });
+      expect(
+        found.seeds.map((s) => s.id),
+        question,
+      ).toEqual(["principalengineer:ann"]);
+      expect((await g.retrieve(question, { seeds: "bm25" })).seeds, question).toEqual([]);
+    }
   });
 
   it("embedding seeding fuses with BM25 and embeds each entity once", async () => {

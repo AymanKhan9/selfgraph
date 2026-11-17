@@ -1,7 +1,7 @@
 const MICROS = new WeakMap<Date, { time: number; micro: number }>();
 
 const ISO_RE =
-  /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2})(?::(\d{2})(?::(\d{2})(?:[.,](\d{1,9}))?)?)?)?(?:\s*(Z|z|[+-]\d{2}(?::?\d{2}(?::?\d{2})?)?))?$/;
+  /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2})(?::(\d{2})(?::(\d{2})(?:[.,](\d{1,9}))?)?)?)?(?:[ \t\n\r\f\v]*(Z|z|[+-]\d{2}(?::?\d{2}(?::?\d{2})?)?))?$/;
 
 function pad(n: number, width = 2): string {
   return String(n).padStart(width, "0");
@@ -31,6 +31,9 @@ export function epochMicros(d: Date): number {
 
 function assertValid(d: Date): void {
   if (Number.isNaN(d.getTime())) throw new RangeError("invalid date");
+  if (d.getUTCFullYear() < 1 || d.getUTCFullYear() > 9999) {
+    throw new RangeError("date is outside the representable datetime range");
+  }
 }
 
 function datePart(d: Date): string {
@@ -80,6 +83,10 @@ export function jsonIso(d: Date): string {
 /**
  * Parse the ISO 8601 forms SelfGraph reads and writes; offset-less text is UTC.
  *
+ * The text is YYYY-MM-DD, then optionally T, t, or a space and HH, HH:MM, or HH:MM:SS with a 1 to 9 digit fraction
+ * after '.' or ',', truncated to microseconds. Then optional ASCII whitespace and Z, z, or an offset of +HH, +HHMM,
+ * +HH:MM, +HHMMSS, or +HH:MM:SS below 24 hours. Python's parse_time accepts the same grammar.
+ *
  * @param text (string): the ISO text.
  * @return (Date): the date, keeping microseconds beyond milliseconds for exact re-encoding.
  */
@@ -94,7 +101,7 @@ export function parseIso(text: string): Date {
   const minute = mis ? Number(mis) : 0;
   const second = ss ? Number(ss) : 0;
   const micro = frac ? Number(frac.slice(0, 6).padEnd(6, "0")) : 0;
-  if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) {
+  if (year < 1 || month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) {
     throw new RangeError(`Invalid ISO 8601 string: ${JSON.stringify(text)}`);
   }
   const d = new Date(0);
@@ -105,9 +112,9 @@ export function parseIso(text: string): Date {
   if (tz && tz !== "Z" && tz !== "z") {
     const sign = tz[0] === "-" ? -1 : 1;
     const digits = tz.slice(1).replace(/:/g, "");
-    offsetSeconds =
-      sign *
-      (Number(digits.slice(0, 2)) * 3600 + Number(digits.slice(2, 4) || 0) * 60 + Number(digits.slice(4, 6) || 0));
+    const [oh, om, os] = [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4, 6)].map((p) => Number(p || 0));
+    if (oh! > 23 || om! > 59 || os! > 59) throw new RangeError(`UTC offset out of range: ${JSON.stringify(text)}`);
+    offsetSeconds = sign * (oh! * 3600 + om! * 60 + os!);
   }
   const out = new Date(d.getTime() - offsetSeconds * 1000);
   MICROS.set(out, { time: out.getTime(), micro });

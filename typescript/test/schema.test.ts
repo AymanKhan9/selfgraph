@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { buildGraph } from "../src/client.js";
-import { FalkorDBStore, KuzuStore, type LLMClient, SelfGraph, ValidationError } from "../src/index.js";
+import { toOssie } from "../src/export.js";
+import { FalkorDBStore, KuzuStore, type LLMClient, SelfGraph, toNeo4jOntology, ValidationError } from "../src/index.js";
 import { runStdio } from "../src/mcp.js";
 import { EntityInput, Extraction, parseOrThrow } from "../src/models.js";
 import { DEFAULT_SETTINGS } from "../src/runtime.js";
@@ -86,7 +87,35 @@ describe("endpoint types", () => {
     expect(check(schema, facts)).toEqual([]);
     const swapped = { ...facts, relations: [{ ...facts.relations[0]!, from_entity: "company:acme" }] };
     expect(check(schema, swapped).map((w) => w.code)).toEqual(["endpoint_type_violation"]);
+    const parsed = asSchema({
+      entities: [
+        { name: "Person", aliases: ["Human"] },
+        { name: "Company", aliases: ["Org"] },
+      ],
+      relations: [
+        { type: "WORKS_AT", from: { types: ["person"] }, to: { types: ["Company", "Org"] } },
+        { type: "KNOWS", from: { types: ["Person"] }, to: { types: ["Human"] } },
+      ],
+    })!;
+    expect(parsed.relations.map((r) => [r.from.types, r.to.types])).toEqual([
+      [["Person"], ["Company"]],
+      [["Person"], ["Person"]],
+    ]);
+    expect((toOssie(parsed).ontology as Array<{ concept: string }>).map((c) => c.concept)).toEqual([
+      "Person",
+      "Company",
+    ]);
+    expect(
+      (toOssie(parsed).ontology as Array<{ relationships: Array<{ roles: unknown }> }>)[0]!.relationships[1]!.roles,
+    ).toEqual([{ concept: "Person", name: "other" }]);
+    expect(toNeo4jOntology(parsed).patterns).toEqual([
+      ["Person", "WORKS_AT", "Company"],
+      ["Person", "KNOWS", "Person"],
+    ]);
     expect(Schema.parse({ relations: [{ type: "R", to: { types: ["Anything"] } }] }).entities).toEqual([]);
+    expect(() => asSchema({ ...schema, entities: [...schema.entities, { name: "Team", aliases: ["org"] }] })).toThrow(
+      "entities[2].aliases[0]",
+    );
   });
 });
 
@@ -113,12 +142,50 @@ describe("Schema.parse and asSchema", () => {
         { name: "Manager", parent: "human" },
       ],
     });
-    expect(aliased?.entities[1]?.parent).toBe("human");
+    expect(aliased?.entities[1]?.parent).toBe("Person");
   });
 
   it.each([
     [{ entities: [{ description: "no name" }] }, "entities[0].name: field required"],
     [{ entities: [{ name: "Person" }, { name: "person" }] }, "entities[1].name: duplicate entity type 'person'"],
+    [
+      { entities: [{ name: "Person" }, { name: "Company", aliases: ["Person"] }] },
+      "entities[1].aliases[0]: 'Person' is already a name or alias of entity type 'Person'",
+    ],
+    [
+      { entities: [{ name: "Company", aliases: ["person"] }, { name: "Person" }] },
+      "entities[0].aliases[0]: 'person' is already a name or alias of entity type 'Person'",
+    ],
+    [
+      {
+        entities: [
+          { name: "Company", aliases: ["org"] },
+          { name: "Team", aliases: ["Org"] },
+        ],
+      },
+      "entities[1].aliases[0]: 'Org' is already a name or alias of entity type 'Company'",
+    ],
+    [
+      { entities: [{ name: "Straße" }, { name: "Company", aliases: ["STRASSE"] }] },
+      "entities[1].aliases[0]: 'STRASSE' is already a name or alias of entity type 'Straße'",
+    ],
+    [
+      { relations: [{ type: "WORKS_AT" }, { type: "OWNS", aliases: ["works at"] }] },
+      "relations[1].aliases[0]: 'works at' is already a name or alias of relation type 'WORKS_AT'",
+    ],
+    [
+      { relations: [{ type: "OWNS", aliases: ["works-at"] }, { type: "WORKS_AT" }] },
+      "relations[0].aliases[0]: 'works-at' is already a name or alias of relation type 'WORKS_AT'",
+    ],
+    [
+      {
+        relations: [
+          { type: "OWNS", aliases: ["employed by"] },
+          { type: "WORKS_AT", aliases: ["employed-by"] },
+        ],
+      },
+      "relations[1].aliases[0]: 'employed-by' is already a name or alias of relation type 'OWNS'",
+    ],
     [{ entities: [{ name: "A" }, { name: "B", parent: "X" }] }, "entities[1].parent: unknown type 'X'"],
     [
       { entities: [{ name: "A" }], relations: [{ type: "R", to: { types: ["A", "B"] } }] },
@@ -140,12 +207,121 @@ describe("Schema.parse and asSchema", () => {
     ],
     [{ relations: [{ type: "R", from: { max_count: 0 } }] }, "relations[0].from.max_count: must be >= 1"],
     [{ relations: [{ type: "R", to: { min_count: -1 } }] }, "relations[0].to.min_count: must be >= 0"],
+    [{ relations: [{ type: "R", from: { max_count: 1.5 } }] }, "relations[0].from.max_count: expected integer"],
+    [
+      { relations: [{ type: "R", from: { max_count: 2 ** 53 } }] },
+      "relations[0].from.max_count: must be <= 9007199254740991",
+    ],
+    [{ relations: [{ type: "R", to: { min_count: 1e20 } }] }, "relations[0].to.min_count: must be <= 9007199254740991"],
     [
       { relations: [{ type: "R", from: { min_count: 2, max_count: 1 } }] },
       "relations[0].from.min_count: min_count 2 is greater than max_count 1",
     ],
   ])("rejects %j", (spec, message) => {
     expect(() => asSchema(spec as Schema)).toThrow(new ValidationError(`invalid schema: ${message}`));
+  });
+
+  it.each([
+    [
+      { relations: [{ type: "R", from: { max_count: -(2 ** 53) } }] },
+      ["relations[0].from.max_count: must be >= -9007199254740991", "relations[0].from.max_count: must be >= 1"],
+    ],
+    [
+      { relations: [{ type: "R", to: { min_count: -1e20 } }] },
+      ["relations[0].to.min_count: must be >= -9007199254740991", "relations[0].to.min_count: must be >= 0"],
+    ],
+    [
+      { relations: [{ type: "R", from: { min_count: 2 ** 53, max_count: 5 } }] },
+      [
+        "relations[0].from.min_count: must be <= 9007199254740991",
+        "relations[0].from.min_count: min_count 9007199254740992 is greater than max_count 5",
+      ],
+    ],
+    [
+      { relations: [{ type: "R", from: { min_count: 1e21, max_count: 5 } }] },
+      [
+        "relations[0].from.min_count: must be <= 9007199254740991",
+        "relations[0].from.min_count: min_count 1e+21 is greater than max_count 5",
+      ],
+    ],
+    [
+      { relations: [{ type: "R", from: { min_count: 1e20 + 16384, max_count: 5 } }] },
+      [
+        "relations[0].from.min_count: must be <= 9007199254740991",
+        "relations[0].from.min_count: min_count 100000000000000020000 is greater than max_count 5",
+      ],
+    ],
+  ])("reports an unsafe count and then the first consistency problem for %j", (spec, lines) => {
+    const message = `invalid schema:${lines.map((line) => `\n  ${line}`).join("")}`;
+    expect(() => asSchema(spec as Schema)).toThrow(new ValidationError(message));
+  });
+
+  it("lets an alias repeat its own type name", () => {
+    const schema = asSchema({
+      entities: [
+        { name: "Person", aliases: ["person", "Human", "human"] },
+        { name: "Company", aliases: ["org"] },
+      ],
+    });
+    expect(schema?.entities.map((e) => e.aliases)).toEqual([["person", "Human", "human"], ["org"]]);
+    const relation = asSchema({ relations: [{ type: "WORKS_AT", aliases: ["works at", "works-at"] }] });
+    expect(relation?.relations[0]?.aliases).toEqual(["works at", "works-at"]);
+  });
+
+  it("stores a parent as the schema type name", () => {
+    const parents = (spec: Schema) => asSchema(spec)?.entities.map((entity) => entity.parent);
+    const stored = [null, "Person"];
+    expect(parents({ entities: [{ name: "Person" }, { name: "Manager", parent: "person" }] })).toEqual(stored);
+    expect(
+      parents({
+        entities: [
+          { name: "Person", aliases: ["Human"] },
+          { name: "Manager", parent: "human" },
+        ],
+      }),
+    ).toEqual(stored);
+    expect(
+      parents({
+        entities: [
+          { name: "Person", aliases: ["Human"] },
+          { name: "Manager", parent: "HUMAN" },
+        ],
+      }),
+    ).toEqual(stored);
+    expect(parents({ entities: [{ name: "Person" }, { name: "Manager", parent: "Person" }] })).toEqual(stored);
+    expect(
+      parents({
+        entities: [
+          { name: "Person", aliases: ["Human"] },
+          { name: "Manager", parent: "Human" },
+        ],
+      }),
+    ).toEqual(stored);
+    expect(() => asSchema({ entities: [{ name: "Person" }, { name: "Manager", parent: "X" }] })).toThrow(
+      "entities[1].parent: unknown type 'X'",
+    );
+    expect(() =>
+      asSchema({
+        entities: [
+          { name: "A", parent: "b" },
+          { name: "B", parent: "a" },
+        ],
+      }),
+    ).toThrow("entities[0].parent: parent cycle 'A' -> 'B' -> 'A'");
+    expect(() => asSchema({ entities: [{ name: "A", parent: "a" }] })).toThrow(
+      "entities[0].parent: parent cycle 'A' -> 'A'",
+    );
+    const spec = {
+      entities: [
+        { name: "Person", properties: [{ name: "age", type: "integer" as const, required: true }] },
+        { name: "Manager", parent: "person" },
+      ],
+    };
+    const schema = asSchema(spec);
+    expect((toOssie(schema!).ontology as { extends?: string[] }[])[1]).toMatchObject({ extends: ["Person"] });
+    expect(check(spec, { entities: [{ type: "Manager", name: "M" }] }).map((w) => w.message)).toEqual([
+      "entity manager:m is missing required property 'age'",
+    ]);
   });
 });
 
@@ -291,6 +467,49 @@ describe("validateAgainstSchema", () => {
     expect(["2024-01-02", "2024-01-02T03:04:05Z", "2024-01-02T03:04:05+05:30"].map(codes)).toEqual([[], [], []]);
     expect(["yesterday", "", "2024-13-01", 5].map(codes)).toEqual(Array(4).fill(["property_type_mismatch"]));
   });
+
+  it("checks only own properties, so names like constructor are not always present", () => {
+    const spec = {
+      entities: [
+        {
+          name: "Car",
+          properties: [
+            { name: "constructor", type: "string" },
+            { name: "toString", type: "string", required: true },
+          ],
+        },
+      ],
+    };
+    const codes = (properties: Record<string, unknown>) =>
+      check(spec, { entities: [{ type: "Car", name: "C", properties }] }).map((w) => w.code);
+    expect(codes({ toString: "x" })).toEqual([]);
+    expect(codes({ constructor: "Ferrari", toString: "x" })).toEqual([]);
+    expect(codes({})).toEqual(["missing_required_property"]);
+  });
+});
+
+describe("distinct relation cardinality", () => {
+  it.each([
+    { name: "one repeated ID counts once", relationIds: ["relation:a", "relation:a"], count: 1 },
+    { name: "two different IDs count twice", relationIds: ["relation:a", "relation:b"], count: 2 },
+  ])("$name", ({ relationIds, count }) => {
+    const schema = {
+      relations: [{ type: "WORKS_AT", from: { max_count: 1 }, to: { max_count: 1 } }],
+    };
+    const facts = {
+      relations: relationIds.map((id) => ({ id, from_entity: "person:p", type: "WORKS_AT", to_entity: "company:c" })),
+    };
+    const found = check(schema, facts);
+    expect(found.map((w) => w.code)).toEqual(count === 1 ? [] : ["cardinality_violation", "cardinality_violation"]);
+    expect(found.map((w) => w.message)).toEqual(
+      count === 1
+        ? []
+        : [
+            "person:p has 2 WORKS_AT (from) in this insert, above max 1",
+            "company:c has 2 WORKS_AT (to) in this insert, above max 1",
+          ],
+    );
+  });
 });
 
 describe("renderSchemaCatalog", () => {
@@ -321,6 +540,14 @@ describe("schema through the client", () => {
     expect((await graph.insert.facts(facts)).warnings.map((w) => w.code)).toEqual(["missing_required_property"]);
     expect((await graph.insert.facts(facts, { schema_mode: "off" })).warnings).toEqual([]);
     await expect(open({ schema, schema_mode: "strict" }).insert.facts(facts)).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("stores an entity without an optional constructor property in strict mode", async () => {
+    const cars = { entities: [{ name: "Car", properties: [{ name: "constructor", type: "string" as const }] }] };
+    const graph = open({ schema: cars, schema_mode: "strict" });
+    const result = await graph.insert.facts({ entities: [{ type: "Car", name: "SF-24", properties: { year: 2024 } }] });
+    expect(result.warnings).toEqual([]);
+    expect((await graph.entities.get("car:sf-24"))?.properties).toEqual({ year: 2024 });
   });
 
   it("injects the schema catalog into the extraction prompt", async () => {
@@ -497,6 +724,160 @@ describe("schema through the client", () => {
     await expect(graph.insert.facts({ entities: [{ type: "Team", name: "Core" }] })).rejects.toThrow(
       "unknown type 'Team'",
     );
+
+    const agedSchema: Schema = {
+      entities: [
+        { name: "Person", properties: [{ name: "age", type: "integer", required: true }] },
+        { name: "Company" },
+      ],
+      relations: [{ type: "WORKS_AT", from: { types: ["Person"] }, to: { types: ["Company"] } }],
+    };
+    const agedGraph = open({ llm, schema: agedSchema, schema_mode: "strict" });
+    await agedGraph.insert.facts({
+      entities: [{ type: "Person", name: "Soham Gupta", aliases: ["Soham"], properties: { age: 28 } }],
+    });
+    const agedRes = await agedGraph.insert.text("Soham works at HydraDB. The team selected it.");
+    expect(agedRes.entities.map((e) => e.id).sort()).toEqual(["company:hydradb", "person:soham-gupta"]);
+    expect(agedRes.relations.map((r) => [r.from_entity, r.type])).toEqual([["person:soham-gupta", "WORKS_AT"]]);
+    expect(agedRes.merges.map((m) => m.survivor_id)).toEqual(["person:soham-gupta"]);
+    expect((await agedGraph.entities.get("person:soham-gupta"))?.properties).toEqual({ age: 28 });
+  });
+
+  it("checks merged properties on insert and treats null as missing for required specs", async () => {
+    const spec: Schema = {
+      entities: [
+        { name: "Person", properties: [{ name: "age", type: "integer", required: true }] },
+        { name: "Company", properties: [{ name: "note", type: "string" }] },
+      ],
+      relations: [
+        {
+          type: "WORKS_AT",
+          from: { types: ["Person"] },
+          to: { types: ["Company"] },
+          properties: [{ name: "since", type: "integer", required: true }],
+        },
+        {
+          type: "KNOWS",
+          from: { types: ["Person"] },
+          to: { types: ["Person"] },
+          properties: [{ name: "since", type: "integer", required: true }],
+        },
+      ],
+    };
+    const parsed = Schema.parse(spec);
+    expect(
+      validateAgainstSchema(
+        Extraction.parse({ entities: [{ type: "Person", name: "Jane", properties: { age: null } }] }),
+        parsed,
+      ).map((w) => w.code),
+    ).toEqual(["missing_required_property"]);
+    expect(
+      validateAgainstSchema(
+        Extraction.parse({ entities: [{ type: "Company", name: "Acme", properties: { note: null } }] }),
+        parsed,
+      ),
+    ).toEqual([]);
+
+    const strict = open({ schema: spec, schema_mode: "strict" });
+    await expect(
+      strict.insert.facts({ entities: [{ type: "Person", name: "Ghost", properties: { age: null } }] }),
+    ).rejects.toThrow(/^entity person:ghost is missing required property 'age'$/);
+    expect(await strict.entities.get("person:ghost")).toBeNull();
+
+    const seeded = await strict.insert.facts({
+      entities: [
+        { type: "Person", name: "Jane", properties: { city: "NYC" } },
+        { type: "Person", name: "Jane", properties: { age: 30 } },
+        { type: "Company", name: "Acme" },
+      ],
+      relations: [
+        {
+          from_entity: "person:jane",
+          type: "WORKS_AT",
+          to_entity: "company:acme",
+          properties: { since: 2020 },
+        },
+      ],
+    });
+    expect(seeded.warnings).toEqual([]);
+
+    const extended = await strict.insert.facts({
+      entities: [{ type: "Person", name: "Jane", properties: { city: "SF" } }],
+      relations: [
+        {
+          from_entity: "person:jane",
+          type: "WORKS_AT",
+          to_entity: "company:acme",
+          properties: { role: "CTO" },
+        },
+      ],
+    });
+    expect(extended.warnings).toEqual([]);
+    expect((await strict.entities.get("person:jane"))?.properties).toEqual({ age: 30, city: "SF" });
+    const [rel] = (await strict.relations.list({ from_entity: "person:jane" })).items;
+    expect(rel?.properties).toEqual({ since: 2020, role: "CTO" });
+
+    const warn = open({ namespace: strict.namespace, schema: spec, schema_mode: "warn" });
+    expect(
+      (
+        await warn.insert.facts({
+          entities: [{ type: "Person", name: "Jane" }],
+          relations: [{ from_entity: "person:jane", type: "WORKS_AT", to_entity: "company:acme" }],
+        })
+      ).warnings,
+    ).toEqual([]);
+
+    await expect(
+      strict.insert.facts({ entities: [{ type: "Person", name: "Jane", properties: { age: null } }] }),
+    ).rejects.toThrow(/^entity person:jane is missing required property 'age'$/);
+    await expect(
+      strict.insert.facts({
+        relations: [
+          {
+            from_entity: "person:jane",
+            type: "WORKS_AT",
+            to_entity: "company:acme",
+            properties: { since: null },
+          },
+        ],
+      }),
+    ).rejects.toThrow("missing required property 'since'");
+    expect((await strict.entities.get("person:jane"))?.properties).toEqual({ age: 30, city: "SF" });
+    expect((await strict.relations.get(rel!.id))?.properties).toEqual({ since: 2020, role: "CTO" });
+
+    const foldedRel = await strict.insert.facts({
+      entities: [{ type: "Person", name: "Jane Doe", aliases: ["Janie"], properties: { age: 35 } }],
+      relations: [
+        {
+          from_entity: "person:jane",
+          type: "KNOWS",
+          to_entity: "person:jane-doe",
+          properties: { role: "mentor" },
+        },
+        {
+          from_entity: "person:jane",
+          type: "KNOWS",
+          to_entity: "person:jane-doe",
+          properties: { since: 2021 },
+        },
+      ],
+    });
+    expect(foldedRel.warnings).toEqual([]);
+    expect(foldedRel.relations[0]?.properties).toEqual({ role: "mentor", since: 2021 });
+
+    const resolvedRes = await strict.insert.facts({
+      entities: [{ type: "Person", name: "Janie" }],
+      relations: [
+        {
+          from_entity: "person:janie",
+          type: "WORKS_AT",
+          to_entity: "company:acme",
+          properties: { since: 2022 },
+        },
+      ],
+    });
+    expect(resolvedRes.merges.map((m) => m.survivor_id)).toEqual(["person:jane-doe"]);
+    expect(resolvedRes.relations.map((r) => r.from_entity)).toEqual(["person:jane-doe"]);
   });
 });
 
@@ -589,9 +970,58 @@ describe("unknown keys and options", () => {
     expect(() => parseOrThrow(Extraction, { entities: [{ type: "P", name: 3 }, { type: "P" }] }, "facts")).toThrow(
       "invalid facts:\n  entities[0].name: expected string\n  entities[1].name: field required",
     );
-    expect((await g.decisions.create("D", { steps: [] })).steps).toEqual([]);
+    const d = await g.decisions.create("D", { steps: [] });
+    expect(d.steps).toEqual([]);
     expect((await g.decisions.create("No steps")).steps).toEqual([]);
     expect((await g.maintenance.decay()).dry_run).toBe(true);
+    await g.insert.facts({
+      entities: [
+        { type: "Person", name: "Ann" },
+        { type: "Company", name: "Acme" },
+      ],
+    });
+    const rel = await g.relations.create("person:ann", "WORKS_AT", "company:acme", {
+      properties: { role: "lead", r: "keep_r" },
+    });
+    const pref = await g.preferences.create("person:ann", "employer", "company:acme", {
+      properties: { role: "lead", r: "keep_r" },
+    });
+    const listCases: Array<[() => Promise<unknown>, string]> = [
+      [
+        () => g.relations.update(rel.id, { remove_properties: "role" as never }),
+        "remove_properties must be a list of strings, got string",
+      ],
+      [
+        () => g.relations.update(rel.id, { remove_properties: null as never }),
+        "remove_properties must be a list of strings, got null",
+      ],
+      [
+        () => g.preferences.update(pref.id, { remove_properties: "role" as never }),
+        "remove_properties must be a list of strings, got string",
+      ],
+      [
+        () => g.decisions.create("Bad steps", { steps: "relation:x" as never }),
+        "decision steps must be a list of strings, got string",
+      ],
+      [
+        () => g.decisions.create("Bad alts", { alternative_entities: "person:ann" as never }),
+        "alternative_entities must be a list of strings, got string",
+      ],
+      [
+        () => g.decisions.update(d.id, { steps: "relation:x" as never }),
+        "decision steps must be a list of strings, got string",
+      ],
+      [() => g.decisions.update(d.id, { steps: null as never }), "decision steps must be a list of strings, got null"],
+      [
+        () => g.decisions.update(d.id, { alternative_entities: null as never }),
+        "alternative_entities must be a list of strings, got null",
+      ],
+    ];
+    for (const [call, message] of listCases) {
+      await expect(call()).rejects.toThrow(new ValidationError(message));
+    }
+    expect((await g.relations.get(rel.id))?.properties).toEqual({ role: "lead", r: "keep_r" });
+    expect((await g.preferences.get(pref.id))?.properties).toEqual({ role: "lead", r: "keep_r" });
   });
 
   it("suggests within edit distance two and breaks ties by declared order", () => {

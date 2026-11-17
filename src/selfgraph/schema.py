@@ -1,12 +1,16 @@
 import logging
+import math
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, ClassVar, Literal, get_args
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import ValidationError as PydanticValidationError
+from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from . import _ops
+from ._serde import L_ENTITY, decode_entity
 from .errors import ValidationError
-from .ids import _canonical_id, entity_id, normalize_rel_type, normalize_text, relation_id, slug
+from .ids import MAX_SAFE_INTEGER, _canonical_id, entity_id, normalize_rel_type, normalize_text, relation_id, slug
 from .models import Extraction, InputModel, InsertWarning, TopInputModel, as_input
 
 __all__ = [
@@ -80,12 +84,66 @@ class EntityType(InputModel):
     certified: bool = False
 
 
+_COUNT_RANGE = "count_range"
+_UNBOUNDED_COUNTS = "selfgraph_unbounded_counts"
+
+
+def _js_count(value: int) -> str:
+    """Render a count the way JavaScript renders the same number in a message.
+
+    @param value (int): the count.
+    @return (str): the count as JavaScript prints it.
+    """
+    if abs(value) <= MAX_SAFE_INTEGER:
+        return str(value)
+    sign = "-" if value < 0 else ""
+    try:
+        text = repr(float(abs(value)))
+    except OverflowError:
+        return str(value)
+    mantissa, _, exponent = text.partition("e")
+    whole, _, fraction = mantissa.partition(".")
+    digits = (whole + fraction).rstrip("0")
+    point = len(whole) + (int(exponent) if exponent else 0)
+    if point <= 21:
+        if len(digits) <= point:
+            return sign + digits + "0" * (point - len(digits))
+        return sign + digits[:point] + "." + digits[point:]
+    head, rest = digits[0], digits[1:]
+    return f"{sign}{head}{'.' + rest if rest else ''}e+{point - 1}"
+
+
 class RelationEndpoint(InputModel):
     input_label: ClassVar[str] = "relation endpoint"
 
     types: list[str] = Field(default_factory=list)
     min_count: int | None = None
     max_count: int | None = None
+
+    @field_validator("min_count", "max_count", mode="before")
+    @classmethod
+    def _whole_count(cls, value: Any, info: ValidationInfo) -> Any:
+        """Accept a safe integer count, or a float with no fractional part, with the TypeScript error text.
+
+        @param value (Any): the raw count.
+        @param info (ValidationInfo): the validation context; _UNBOUNDED_COUNTS skips the safe integer range.
+        @return (Any): the count as an int, or None.
+        """
+        if value is None:
+            return value
+        if not isinstance(value, int) or isinstance(value, bool):
+            if not isinstance(value, float) or not math.isfinite(value):
+                raise ValueError("expected number")
+            if not value.is_integer():
+                raise ValueError("expected integer")
+            value = int(value)
+        if (info.context or {}).get(_UNBOUNDED_COUNTS):
+            return value
+        if value > MAX_SAFE_INTEGER:
+            raise PydanticCustomError(_COUNT_RANGE, f"must be <= {MAX_SAFE_INTEGER}")
+        if value < -MAX_SAFE_INTEGER:
+            raise PydanticCustomError(_COUNT_RANGE, f"must be >= {-MAX_SAFE_INTEGER}")
+        return value
 
 
 class RelationType(InputModel):
@@ -111,27 +169,75 @@ class Schema(TopInputModel):
     entities: list[EntityType] = Field(default_factory=list)
     relations: list[RelationType] = Field(default_factory=list)
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _report_counts_with_consistency(cls, data: Any, handler: Any) -> Any:
+        """Report the first consistency problem after counts outside the safe integer range, as TypeScript does.
+
+        @param data (Any): the raw schema.
+        @param handler (Any): the inner validator.
+        @return (Any): the validated schema.
+        """
+        try:
+            return handler(data)
+        except PydanticValidationError as exc:
+            errors = exc.errors()
+            if not isinstance(data, Mapping) or any(e["type"] != _COUNT_RANGE for e in errors):
+                raise
+            unbounded = {_UNBOUNDED_COUNTS: True}
+            schema = cls.model_construct(
+                entities=[EntityType.model_validate(e, context=unbounded) for e in data.get("entities") or []],
+                relations=[RelationType.model_validate(r, context=unbounded) for r in data.get("relations") or []],
+            )
+            try:
+                schema._check_consistency()
+            except ValueError as problem:
+                errors.append({"type": "value_error", "msg": str(problem), "loc": (), "input": data})
+            else:
+                raise
+            details = [
+                InitErrorDetails(type=PydanticCustomError(e["type"], str(e["msg"])), loc=e["loc"], input=e["input"])
+                for e in errors
+            ]
+            raise PydanticValidationError.from_exception_data(cls.__name__, details) from exc
+
     @model_validator(mode="after")
     def _check_consistency(self) -> "Schema":
         """Reject a schema whose types contradict each other, naming the first problem by its path.
 
-        Entity type names are compared ignoring case and relation types after normalization. A max_count must be
-        at least 1, a min_count at least 0, and a min_count no greater than the max_count on the same side.
+        Entity type names and aliases are compared ignoring case, and an entity alias may not name another type or
+        repeat another type's alias. Relation types are compared after normalization. A max_count must be at
+        least 1, a min_count at least 0, and a min_count no greater than the max_count on the same side.
 
-        @return (Schema): the schema; raises ValueError on a duplicate name, an unknown or cyclic parent, an
-            endpoint type that is no entity type name or alias, or an impossible endpoint count.
+        @return (Schema): the schema; raises ValueError on a duplicate name, an alias of another type, an unknown
+            or cyclic parent, an endpoint type that is no entity type name or alias, or an impossible endpoint count.
         """
         names: set[str] = set()
         for i, entity in enumerate(self.entities):
             if entity.name.casefold() in names:
                 raise ValueError(f"entities[{i}].name: duplicate entity type {entity.name!r}")
             names.add(entity.name.casefold())
+        owners = {entity.name.casefold(): i for i, entity in enumerate(self.entities)}
+        for i, entity in enumerate(self.entities):
+            for j, alias in enumerate(entity.aliases):
+                owner = owners.setdefault(alias.casefold(), i)
+                if owner != i:
+                    raise ValueError(
+                        f"entities[{i}].aliases[{j}]: {alias!r} is already a name or alias of entity type "
+                        f"{self.entities[owner].name!r}"
+                    )
         index = _entity_index(self)
         for i, entity in enumerate(self.entities):
             if entity.parent is None:
                 continue
-            if entity.parent not in index:
-                raise ValueError(f"entities[{i}].parent: unknown type {entity.parent!r}")
+            given = entity.parent
+            resolved = canonical_entity_type(given, self)
+            if resolved not in index:
+                raise ValueError(f"entities[{i}].parent: unknown type {given!r}")
+            entity.parent = resolved
+        for i, entity in enumerate(self.entities):
+            if entity.parent is None:
+                continue
             chain, seen = [entity.name], {entity.name}
             current: EntityType | None = index[entity.parent]
             while current is not None:
@@ -142,7 +248,7 @@ class Schema(TopInputModel):
                     break
                 seen.add(current.name)
                 current = index.get(current.parent) if current.parent is not None else None
-        types: set[str] = set()
+        types: dict[str, int] = {}
         for i, relation in enumerate(self.relations):
             try:
                 rtype = normalize_rel_type(relation.type)
@@ -151,19 +257,38 @@ class Schema(TopInputModel):
             if rtype in types:
                 raise ValueError(f"relations[{i}].type: duplicate relation type {relation.type!r}")
             if rtype is not None:
-                types.add(rtype)
+                types[rtype] = i
             for side, end in (("from", relation.from_), ("to", relation.to)):
                 at = f"relations[{i}].{side}"
-                for j, name in enumerate(end.types if self.entities else ()):
-                    if canonical_entity_type(name, self).casefold() not in names:
-                        raise ValueError(f"{at}.types[{j}]: unknown type {name!r}")
+                if self.entities:
+                    resolved_types: list[str] = []
+                    for j, name in enumerate(end.types):
+                        resolved = canonical_entity_type(name, self)
+                        if resolved.casefold() not in names:
+                            raise ValueError(f"{at}.types[{j}]: unknown type {name!r}")
+                        if resolved not in resolved_types:
+                            resolved_types.append(resolved)
+                    end.types = resolved_types
                 if end.max_count is not None and end.max_count < 1:
                     raise ValueError(f"{at}.max_count: must be >= 1")
                 if end.min_count is not None and end.min_count < 0:
                     raise ValueError(f"{at}.min_count: must be >= 0")
                 if end.min_count is not None and end.max_count is not None and end.min_count > end.max_count:
                     raise ValueError(
-                        f"{at}.min_count: min_count {end.min_count} is greater than max_count {end.max_count}"
+                        f"{at}.min_count: min_count {_js_count(end.min_count)} is greater than "
+                        f"max_count {_js_count(end.max_count)}"
+                    )
+        for i, relation in enumerate(self.relations):
+            for j, alias in enumerate(relation.aliases):
+                try:
+                    key = normalize_rel_type(alias)
+                except ValidationError:
+                    continue
+                owner = types.setdefault(key, i)
+                if owner != i:
+                    raise ValueError(
+                        f"relations[{i}].aliases[{j}]: {alias!r} is already a name or alias of relation type "
+                        f"{self.relations[owner].type!r}"
                     )
         return self
 
@@ -529,7 +654,7 @@ def _check_properties(
     """
     warnings: list[InsertWarning] = []
     for spec in specs:
-        if spec.required and spec.name not in properties:
+        if spec.required and properties.get(spec.name) is None:
             warnings.append(
                 InsertWarning(
                     code="missing_required_property",
@@ -586,7 +711,7 @@ def validate_against_schema(
             type_of_id[eid] = matched
             warnings.extend(_check_properties("entity", ref, ent.properties, _property_specs(matched, entities)))
 
-    counts: dict[tuple[str, str, str], int] = {}
+    counts: dict[tuple[str, str, str], set[str]] = {}
     for rel in facts.relations:
         rtype = normalize_rel_type(rel.type)
         matched = relations.get(rtype)
@@ -598,6 +723,7 @@ def validate_against_schema(
                 )
             continue
         canonical = normalize_rel_type(matched.type)
+        rid = rel.id or relation_id(rel.from_entity, canonical, rel.to_entity)
         for side, endpoint, eid in (("from", matched.from_, rel.from_entity), ("to", matched.to, rel.to_entity)):
             allowed = {canonical_entity_type(t, schema) for t in endpoint.types}
             end_type = type_of_id.get(eid)
@@ -612,7 +738,7 @@ def validate_against_schema(
                         message=f"relation {ref} {side} entity {eid} is not one of {endpoint.types}",
                     )
                 )
-            counts[(canonical, side, eid)] = counts.get((canonical, side, eid), 0) + 1
+            counts.setdefault((canonical, side, eid), set()).add(rid)
         warnings.extend(_check_properties("relation", ref, rel.properties, matched.properties))
 
     for relation in schema.relations if cardinality else ():
@@ -620,9 +746,10 @@ def validate_against_schema(
         for side, endpoint in (("from", relation.from_), ("to", relation.to)):
             if endpoint.min_count is None and endpoint.max_count is None:
                 continue
-            for (ctype, cside, eid), n in counts.items():
+            for (ctype, cside, eid), relation_ids in counts.items():
                 if ctype != rtype or cside != side:
                     continue
+                n = len(relation_ids)
                 low, high = endpoint.min_count, endpoint.max_count
                 for bound, limit, broken in (
                     ("below min", low, low is not None and n < low),
@@ -638,6 +765,56 @@ def validate_against_schema(
     return warnings
 
 
+async def _merged_facts(runner: Any, ns: str, facts: Extraction, schema: Schema) -> Extraction:
+    """Resolve the entity types and entity and relation properties an upsert of facts would store.
+
+    @param runner (Any): graph runner.
+    @param ns (str): namespace.
+    @param facts (Extraction): the facts being upserted, with canonical types.
+    @param schema (Schema): the active schema.
+    @return (Extraction): a copy whose entities and relations carry their post-upsert types and properties.
+    """
+    schema_types = {t.name for t in schema.entities}
+    entity_keys = []
+    for ent in facts.entities:
+        etype = _ops._clean_text(ent.type)
+        ename = _ops._clean_text(ent.name)
+        entity_keys.append((ent.id or entity_id(etype, ename), etype, ent))
+    eids = _ops._dedup_list(eid for eid, _, _ in entity_keys)
+    stored_entities = {
+        eid: decode_entity(p) for eid, p in (await _ops._nodes_by_id(runner, ns, L_ENTITY, eids)).items()
+    }
+    entity_state: dict[str, tuple[str, dict[str, Any]]] = {
+        eid: (stored.type, stored.properties) for eid, stored in stored_entities.items()
+    }
+    for eid, etype, ent in entity_keys:
+        prev = entity_state.get(eid)
+        if prev is None:
+            entity_state[eid] = (etype, _ops._merge_props(None, ent.properties))
+        else:
+            prev_type, prev_props = prev
+            next_type = etype if etype in schema_types else prev_type
+            entity_state[eid] = (next_type, _ops._merge_props(prev_props, ent.properties))
+    entities = [
+        ent.model_copy(update={"type": entity_state[eid][0], "properties": entity_state[eid][1]})
+        for eid, _, ent in entity_keys
+    ]
+
+    rel_keys = [
+        (rel.id or relation_id(rel.from_entity, normalize_rel_type(rel.type), rel.to_entity), rel)
+        for rel in facts.relations
+    ]
+    stored_relations = await _ops._current_relations(runner, ns, rel_keys)
+    rel_props: dict[str, dict[str, Any]] = {
+        rid: _ops._relation_of(edge).properties for rid, edge in stored_relations.items()
+    }
+    for rid, rel in rel_keys:
+        rel_props[rid] = _ops._merge_props(rel_props.get(rid), rel.properties)
+    relations = [rel.model_copy(update={"properties": rel_props[rid]}) for rid, rel in rel_keys]
+
+    return facts.model_copy(update={"entities": entities, "relations": relations})
+
+
 async def enforce_schema(
     runner: Any,
     ns: str,
@@ -648,11 +825,13 @@ async def enforce_schema(
     cardinality: bool = True,
     max_count: bool = True,
     before: Extraction | None = None,
+    upsert: bool = False,
 ) -> list[InsertWarning]:
     """Check a pending write against the schema, looking up stored endpoint types, and apply the schema mode.
 
     With before, the stored state an update starts from, only the warnings the update introduces count: a
-    violation the stored state already had neither raises in strict mode nor is reported in warn mode.
+    violation the stored state already had neither raises in strict mode nor is reported in warn mode. With
+    upsert, entities and relations are checked after merging their properties with what is already stored.
 
     @param runner (Any): graph runner.
     @param ns (str): namespace.
@@ -662,10 +841,13 @@ async def enforce_schema(
     @param cardinality (bool): whether to count relations per endpoint against min_count and max_count.
     @param max_count (bool): whether to report counts above max_count, which a contradiction check reports instead.
     @param before (Extraction | None): the stored state an update replaces, or None for a new write.
+    @param upsert (bool): whether to merge facts onto stored entities and relations before checking.
     @return (list[InsertWarning]): the warnings, empty when off or clean.
     """
     if schema is None or mode == "off":
         return []
+    if upsert:
+        facts = await _merged_facts(runner, ns, facts, schema)
 
     async def check(subject: Extraction) -> list[InsertWarning]:
         return validate_against_schema(
@@ -719,11 +901,12 @@ async def drop_off_schema(
     """
     if schema is None:
         return facts, []
+    merged = await _merged_facts(runner, ns, facts, schema)
     warnings: list[InsertWarning] = []
     dropped: set[str] = set()
 
     def keep(kind: str, oid: str, reasons: list[str]) -> bool:
-        if reasons:
+        if reasons and oid not in dropped:
             dropped.add(oid)
             message = f"dropped extracted {kind} {oid}: {'; '.join(reasons)}"
             warnings.append(InsertWarning(code="dropped_off_schema", message=message))
@@ -732,22 +915,22 @@ async def drop_off_schema(
     def lost(refs: Iterable[str | None]) -> list[str]:
         return [f"{ref} was dropped" for ref in dict.fromkeys(refs) if ref in dropped]
 
-    entities = [
-        ent
-        for ent in facts.entities
-        if keep(
-            "entity",
-            ent.id or entity_id(ent.type, ent.name),
-            [w.message for w in validate_against_schema(Extraction(entities=[ent]), schema, cardinality=False)],
-        )
-    ]
-    by_id = {ent.id or entity_id(ent.type, ent.name): ent for ent in entities}
+    entities = []
+    by_id = {}
+    for ent, check_ent in zip(facts.entities, merged.entities, strict=True):
+        eid = ent.id or entity_id(ent.type, ent.name)
+        reasons = [
+            w.message for w in validate_against_schema(Extraction(entities=[check_ent]), schema, cardinality=False)
+        ]
+        if keep("entity", eid, reasons):
+            entities.append(ent)
+            by_id[eid] = check_ent
     graph_types = await _stored_types(runner, ns, facts)
     relations = []
-    for rel in facts.relations:
+    for rel, check_rel in zip(facts.relations, merged.relations, strict=True):
         ends = [by_id[e] for e in (rel.from_entity, rel.to_entity) if e in by_id]
         found = validate_against_schema(
-            Extraction(entities=ends, relations=[rel]), schema, graph_types=graph_types, cardinality=False
+            Extraction(entities=ends, relations=[check_rel]), schema, graph_types=graph_types, cardinality=False
         )
         rid = rel.id or relation_id(rel.from_entity, rel.type, rel.to_entity)
         if keep("relation", rid, lost([rel.from_entity, rel.to_entity]) or [w.message for w in found]):

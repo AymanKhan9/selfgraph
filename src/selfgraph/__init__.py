@@ -34,6 +34,7 @@ from .models import (
     Extraction,
     ExtractionInstructions,
     ExtractionPrompts,
+    GraphDiff,
     InsertResult,
     InsertWarning,
     LintIssue,
@@ -94,6 +95,7 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "GraphDiff",
     "SelfGraph",
     "SyncSelfGraph",
     "CypherStore",

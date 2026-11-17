@@ -129,12 +129,22 @@ export class Relations extends Resource {
     return this.graph.read((store, ns) => ops.getRelationCurrent(store, ns, id));
   }
 
+  /**
+   * List current relations, optionally filtered by endpoints and type.
+   *
+   * @param options (RelationListOptions): from_entity, type, to_entity, cursor, limit, and include_invalidated; with a schema, an alias matches its type.
+   * @return (Page<Relation>): relations ordered by id.
+   */
   async list(options: RelationListOptions = {}): Promise<Page<Relation>> {
     checkOptions("relations.list", options, LIST_KEYS);
+    const rtype =
+      typeof options.type === "string" && pyStrip(options.type)
+        ? canonicalRelationType(options.type, this.graph.schema)
+        : options.type;
     return this.pageById("relation", options, (store, ns, window) =>
       ops.listRelations(store, ns, {
         from_entity: options.from_entity,
-        type: options.type,
+        type: rtype,
         to_entity: options.to_entity,
         include_invalidated: options.include_invalidated,
         ...window,
@@ -145,7 +155,7 @@ export class Relations extends Resource {
   /**
    * Yield every match across pages, following the list cursor.
    *
-   * @param options (object): the list filters, and limit: the page size per fetch, not a cap; iteration yields every match.
+   * @param options (object): the list filters, and limit: the page size per fetch, not a cap; iteration yields every match; with a schema, an alias matches its type.
    * @return (AsyncGenerator<Relation>): every matching relation.
    */
   iterate(options: Omit<RelationListOptions, "cursor"> = {}): AsyncGenerator<Relation> {
@@ -162,13 +172,14 @@ export class Relations extends Resource {
    *
    * @param id (string): the relation id.
    * @param options (RelationUpdateOptions): properties to set and remove, a new valid time, and evidence records to add.
-   * @return (Relation): the current version.
+   * @return (Relation): the new version, current unless supersede retired it.
    */
   async update(id: string, options: RelationUpdateOptions = {}): Promise<Relation> {
     checkOptions("relations.update", options, UPDATE_KEYS);
     ops.validateOwnId("relation", id);
     const eventTime = parseTime(options.event_time, "event_time");
     const evidence = options.evidence == null ? null : parseEvidence(options.evidence);
+    const conflicts = this.graph.contradictionFor(null, this.graph.schema);
     return this.graph.write((tx, ns) =>
       ops.updateRelation(
         tx,
@@ -176,11 +187,12 @@ export class Relations extends Resource {
         id,
         {
           set_properties: options.set_properties ?? null,
-          remove_properties: [...(options.remove_properties ?? [])],
+          remove_properties: options.remove_properties === undefined ? [] : options.remove_properties,
           event_time: eventTime,
           evidence,
         },
         this.graph.schemaCheck,
+        { contradiction: conflicts.contradiction, caps: conflicts.caps },
       ),
     );
   }
@@ -246,11 +258,14 @@ export class Relations extends Resource {
   /**
    * Delete a relation, all its versions, and any decision trace that uses it as a step.
    *
+   * A relation it had retired comes back as current when the schema's max_count leaves room, else it is re-pointed to
+   * the relation that displaces it.
+   *
    * @param id (string): the relation id.
-   * @return (DeleteResult): counts of what was removed.
+   * @return (DeleteResult): counts of what was removed, and relations restored.
    */
   async delete(id: string): Promise<DeleteResult> {
     ops.validateOwnId("relation", id);
-    return this.graph.write((tx, ns) => ops.deleteRelation(tx, ns, id));
+    return this.graph.write((tx, ns) => ops.deleteRelation(tx, ns, id, this.graph.caps()));
   }
 }

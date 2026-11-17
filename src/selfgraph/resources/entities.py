@@ -150,4 +150,4 @@ class Entities(Resource):
         @param id (str): the entity id.
         @return (DeleteResult): counts of entities, relation versions, and decisions removed.
         """
-        return DeleteResult(**await self._c._write(_ops.delete_entity, id))
+        return DeleteResult(**await self._c._write(_ops.delete_entity, id, self._c._caps()))

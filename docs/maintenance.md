@@ -80,7 +80,9 @@ relations.
 Removal goes through the normal deletes, so a pruned entity takes what
 [`entities.delete`](resources.md#updating-and-deleting) takes. A relation a
 [contradiction](schema.md#contradictions) retired is never matched or scored. It
-stays as history until an endpoint is pruned.
+stays as history until an endpoint is pruned. Pruning a relation settles its
+`max_count` endpoints again as a delete does, and `deleted.restored_relations`
+counts the relations that came back.
 
 A [certified](trust.md#certification) relation is kept, and so is each entity it
 connects, since removing the entity would take the relation with it. The plan
@@ -119,6 +121,8 @@ are created with explicit ids. Each group collapses into its lowest id:
 - **Versions.** The duplicates are deleted with every version. Only the
   survivor's history is kept, even when a duplicate is newer or has more
   versions.
+- **Retirements.** A relation a duplicate had retired is re-pointed to the
+  survivor in place, since the survivor states the same fact.
 
 Relations a contradiction invalidated are never grouped. A group holding a
 [certified](trust.md#certification) relation is listed in `certified` and left

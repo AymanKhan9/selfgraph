@@ -5,17 +5,28 @@ import { canonicalId, entityId, normalizeRelType, normalizeText, relationId, slu
 import { casefold } from "./internal/casefold.js";
 import { log } from "./internal/log.js";
 import { pyRepr } from "./internal/py.js";
+import { L_ENTITY } from "./labels.js";
 import {
   asInput,
   type InsertWarning,
   insertWarning,
   type JsonObject,
-  optNumber,
+  optInt,
   optString,
   type ParsedExtraction,
 } from "./models.js";
-import { cleanText, getEntity, type RelationCap } from "./ops.js";
+import {
+  cleanText,
+  currentRelations,
+  dedupList,
+  getEntity,
+  mergeProps,
+  nodesById,
+  type RelationCap,
+  relationOf,
+} from "./ops.js";
 import type { GraphPrimitives } from "./protocols.js";
+import { decodeEntity } from "./serde.js";
 import { parseTime } from "./validate.js";
 
 const PropertyTypeSchema = z.enum(["string", "integer", "float", "boolean", "datetime", "json"]);
@@ -60,8 +71,8 @@ export const EntityType = z.strictObject({
 
 export const RelationEndpoint = z.strictObject({
   types: z.array(z.string()).default([]),
-  min_count: optNumber,
-  max_count: optNumber,
+  min_count: optInt,
+  max_count: optInt,
 });
 
 export const RelationType = z.strictObject({
@@ -205,10 +216,12 @@ export function entityIndex(schema: ParsedSchema): Map<string, ParsedEntityType>
 }
 
 /**
- * Find the first inconsistency in a schema: a duplicate type, an unknown or cyclic parent, or a bad count.
+ * Find the first inconsistency in a schema: a duplicate type, an alias of another type, an unknown or cyclic parent,
+ * or a bad count.
  *
- * Entity type names are compared ignoring case and relation types after normalization. A max_count must be at least
- * 1, a min_count at least 0, and a min_count no greater than the max_count on the same side.
+ * Entity type names and aliases are compared ignoring case, and an entity alias may not name another type or repeat
+ * another type's alias. Relation types are compared after normalization. A max_count must be at least 1, a
+ * min_count at least 0, and a min_count no greater than the max_count on the same side.
  *
  * @param schema (z.output<typeof SchemaObject>): the schema.
  * @return ([Array<string | number>, string] | null): the path and message of the first problem, or null.
@@ -221,7 +234,28 @@ function schemaProblem(schema: z.output<typeof SchemaObject>): [Array<string | n
     }
     names.add(casefold(entity.name));
   }
+  const owners = new Map<string, number>(schema.entities.map((entity, i) => [casefold(entity.name), i]));
+  for (const [i, entity] of schema.entities.entries()) {
+    for (const [j, alias] of entity.aliases.entries()) {
+      const key = casefold(alias);
+      if (!owners.has(key)) owners.set(key, i);
+      const owner = owners.get(key) as number;
+      if (owner !== i) {
+        return [
+          ["entities", i, "aliases", j],
+          `${pyRepr(alias)} is already a name or alias of entity type ${pyRepr(schema.entities[owner]?.name)}`,
+        ];
+      }
+    }
+  }
   const index = entityIndex(schema);
+  for (const [i, entity] of schema.entities.entries()) {
+    if (entity.parent == null) continue;
+    const given = entity.parent;
+    const resolved = canonicalEntityType(given, schema);
+    if (!index.has(resolved)) return [["entities", i, "parent"], `unknown type ${pyRepr(given)}`];
+    entity.parent = resolved;
+  }
   for (const [i, entity] of schema.entities.entries()) {
     if (entity.parent == null) continue;
     let current = index.get(entity.parent);
@@ -238,7 +272,7 @@ function schemaProblem(schema: z.output<typeof SchemaObject>): [Array<string | n
       current = current.parent == null ? undefined : index.get(current.parent);
     }
   }
-  const types = new Set<string>();
+  const types = new Map<string, number>();
   for (const [i, relation] of schema.relations.entries()) {
     let rtype: string | null = null;
     try {
@@ -249,18 +283,43 @@ function schemaProblem(schema: z.output<typeof SchemaObject>): [Array<string | n
     if (rtype !== null && types.has(rtype)) {
       return [["relations", i, "type"], `duplicate relation type ${pyRepr(relation.type)}`];
     }
-    if (rtype !== null) types.add(rtype);
+    if (rtype !== null) types.set(rtype, i);
     for (const side of ["from", "to"] as const) {
-      for (const [j, name] of (schema.entities.length ? relation[side].types : []).entries()) {
-        if (!names.has(casefold(canonicalEntityType(name, schema)))) {
-          return [["relations", i, side, "types", j], `unknown type ${pyRepr(name)}`];
+      if (schema.entities.length) {
+        const resolvedTypes: string[] = [];
+        for (const [j, name] of relation[side].types.entries()) {
+          const resolved = canonicalEntityType(name, schema);
+          if (!names.has(casefold(resolved))) {
+            return [["relations", i, side, "types", j], `unknown type ${pyRepr(name)}`];
+          }
+          if (!resolvedTypes.includes(resolved)) resolvedTypes.push(resolved);
         }
+        relation[side].types = resolvedTypes;
       }
       const { min_count: min, max_count: max } = relation[side];
       if (max != null && max < 1) return [["relations", i, side, "max_count"], "must be >= 1"];
       if (min != null && min < 0) return [["relations", i, side, "min_count"], "must be >= 0"];
       if (min != null && max != null && min > max) {
         return [["relations", i, side, "min_count"], `min_count ${min} is greater than max_count ${max}`];
+      }
+    }
+  }
+  for (const [i, relation] of schema.relations.entries()) {
+    for (const [j, alias] of relation.aliases.entries()) {
+      let key: string;
+      try {
+        key = normalizeRelType(alias);
+      } catch (err) {
+        if (!(err instanceof ValidationError)) throw err;
+        continue;
+      }
+      if (!types.has(key)) types.set(key, i);
+      const owner = types.get(key) as number;
+      if (owner !== i) {
+        return [
+          ["relations", i, "aliases", j],
+          `${pyRepr(alias)} is already a name or alias of relation type ${pyRepr(schema.relations[owner]?.type)}`,
+        ];
       }
     }
   }
@@ -470,14 +529,14 @@ function checkProperties(
 ): InsertWarning[] {
   const warnings: InsertWarning[] = [];
   for (const spec of specs) {
-    if (spec.required && !(spec.name in properties)) {
+    if (spec.required && (!Object.hasOwn(properties, spec.name) || properties[spec.name] == null)) {
       warnings.push(
         insertWarning("missing_required_property", `${kind} ${ref} is missing required property ${pyRepr(spec.name)}`),
       );
     }
   }
   for (const spec of specs) {
-    if (spec.name in properties && !typeOk(properties[spec.name], spec.type)) {
+    if (Object.hasOwn(properties, spec.name) && !typeOk(properties[spec.name], spec.type)) {
       warnings.push(
         insertWarning("property_type_mismatch", `${kind} ${ref} property ${pyRepr(spec.name)} should be ${spec.type}`),
       );
@@ -522,7 +581,7 @@ export function validateAgainstSchema(
     }
   }
 
-  const counts = new Map<string, { rtype: string; side: string; eid: string; n: number }>();
+  const counts = new Map<string, { rtype: string; side: string; eid: string; ids: Set<string> }>();
   for (const rel of facts.relations) {
     const rtype = normalizeRelType(rel.type);
     const matched = relations.get(rtype);
@@ -533,6 +592,7 @@ export function validateAgainstSchema(
       continue;
     }
     const canonical = normalizeRelType(matched.type);
+    const rid = rel.id || relationId(rel.from_entity, canonical, rel.to_entity);
     const sides: Array<[string, ParsedEndpoint, string]> = [
       ["from", matched.from, rel.from_entity],
       ["to", matched.to, rel.to_entity],
@@ -555,8 +615,8 @@ export function validateAgainstSchema(
       }
       const key = `${canonical}\x1f${side}\x1f${eid}`;
       const existing = counts.get(key);
-      if (existing) existing.n += 1;
-      else counts.set(key, { rtype: canonical, side, eid, n: 1 });
+      if (existing) existing.ids.add(rid);
+      else counts.set(key, { rtype: canonical, side, eid, ids: new Set([rid]) });
     }
     warnings.push(...checkProperties("relation", ref, rel.properties, matched.properties));
   }
@@ -566,8 +626,9 @@ export function validateAgainstSchema(
     for (const side of ["from", "to"] as const) {
       const { min_count: low, max_count: high } = relation[side];
       if (low === null && high === null) continue;
-      for (const { rtype: ctype, side: cside, eid, n } of counts.values()) {
+      for (const { rtype: ctype, side: cside, eid, ids } of counts.values()) {
         if (ctype !== rtype || cside !== side) continue;
+        const n = ids.size;
         const bounds: Array<[string, number | null, boolean]> = [
           ["below min", low, low !== null && n < low],
           ["above max", high, options.maxCount !== false && high !== null && n > high],
@@ -589,6 +650,62 @@ export function validateAgainstSchema(
 }
 
 /**
+ * Resolve the entity types and entity and relation properties an upsert of facts would store.
+ *
+ * @param runner (GraphPrimitives): the graph runner.
+ * @param ns (string): the namespace.
+ * @param facts (T): the facts being upserted, with canonical types.
+ * @param schema (ParsedSchema): the active schema.
+ * @return (Promise<T>): a copy whose entities and relations carry their post-upsert types and properties.
+ */
+async function mergedFacts<T extends SchemaSubject>(
+  runner: GraphPrimitives,
+  ns: string,
+  facts: T,
+  schema: ParsedSchema,
+): Promise<T> {
+  const schemaTypes = new Set(schema.entities.map((t) => t.name));
+  const entityKeys = facts.entities.map((ent) => {
+    const etype = cleanText(ent.type);
+    const ename = cleanText(ent.name);
+    return { eid: ent.id || entityId(etype, ename), etype, ent };
+  });
+  const eids = dedupList(entityKeys.map((item) => item.eid));
+  const entityState = new Map<string, [string, JsonObject]>();
+  for (const [eid, props] of await nodesById(runner, ns, L_ENTITY, eids)) {
+    const stored = decodeEntity(props);
+    entityState.set(eid, [stored.type, stored.properties]);
+  }
+  for (const { eid, etype, ent } of entityKeys) {
+    const prev = entityState.get(eid);
+    if (prev === undefined) {
+      entityState.set(eid, [etype, mergeProps(null, ent.properties)]);
+    } else {
+      const [prevType, prevProps] = prev;
+      entityState.set(eid, [schemaTypes.has(etype) ? etype : prevType, mergeProps(prevProps, ent.properties)]);
+    }
+  }
+  const entities = entityKeys.map(({ eid, ent }) => {
+    const [type, properties] = entityState.get(eid)!;
+    return { ...ent, type, properties };
+  });
+
+  const relKeys = facts.relations.map(
+    (rel) => [rel.id || relationId(rel.from_entity, normalizeRelType(rel.type), rel.to_entity), rel] as const,
+  );
+  const relProps = new Map<string, JsonObject>();
+  for (const [rid, edge] of await currentRelations(runner, ns, relKeys)) {
+    relProps.set(rid, relationOf(edge).properties);
+  }
+  for (const [rid, rel] of relKeys) {
+    relProps.set(rid, mergeProps(relProps.get(rid) ?? null, rel.properties));
+  }
+  const relations = relKeys.map(([rid, rel]) => ({ ...rel, properties: relProps.get(rid)! }));
+
+  return { ...facts, entities, relations };
+}
+
+/**
  * Check a pending write against the schema, looking up stored endpoint types, and apply the schema mode.
  *
  * @param runner (GraphPrimitives): the graph runner.
@@ -599,6 +716,7 @@ export function validateAgainstSchema(
  * @param cardinality (boolean): whether to count relations per endpoint against min_count and max_count.
  * @param maxCount (boolean): whether to report counts above max_count, which a contradiction check reports instead.
  * @param before (SchemaSubject | null): the stored state an update replaces, or null for a new write; only the warnings the update introduces then count, in both warn and strict mode.
+ * @param upsert (boolean): whether to merge facts onto stored entities and relations before checking.
  * @return (InsertWarning[]): the warnings, empty when off or clean.
  */
 export async function enforceSchema(
@@ -610,13 +728,15 @@ export async function enforceSchema(
   cardinality = true,
   maxCount = true,
   before: SchemaSubject | null = null,
+  upsert = false,
 ): Promise<InsertWarning[]> {
   if (schema === null || mode === "off") return [];
+  const target = upsert ? await mergedFacts(runner, ns, facts, schema) : facts;
   const check = async (subject: SchemaSubject): Promise<InsertWarning[]> => {
     const graphTypes = await storedTypes(runner, ns, subject);
     return validateAgainstSchema(subject, schema, { graphTypes, cardinality, maxCount });
   };
-  let warnings = await check(facts);
+  let warnings = await check(target);
   if (before !== null && warnings.length) {
     const known = new Set((await check(before)).map((w) => JSON.stringify([w.code, w.message])));
     warnings = warnings.filter((w) => !known.has(JSON.stringify([w.code, w.message])));
@@ -664,10 +784,11 @@ export async function dropOffSchema(
   schema: ParsedSchema | null,
 ): Promise<[ParsedExtraction, InsertWarning[]]> {
   if (schema === null) return [facts, []];
+  const merged = await mergedFacts(runner, ns, facts, schema);
   const warnings: InsertWarning[] = [];
   const dropped = new Set<string>();
   const keep = (kind: string, id: string, reasons: string[]): boolean => {
-    if (reasons.length) {
+    if (reasons.length && !dropped.has(id)) {
       dropped.add(id);
       warnings.push(insertWarning("dropped_off_schema", `dropped extracted ${kind} ${id}: ${reasons.join("; ")}`));
     }
@@ -677,18 +798,24 @@ export async function dropOffSchema(
     [...new Set(refs)].filter((ref) => ref !== null && dropped.has(ref)).map((ref) => `${ref} was dropped`);
   const messages = (found: InsertWarning[]): string[] => found.map((w) => w.message);
 
-  const entities = facts.entities.filter((ent) =>
-    keep(
-      "entity",
-      entityRef(ent),
-      messages(validateAgainstSchema({ entities: [ent], relations: [] }, schema, { cardinality: false })),
-    ),
-  );
-  const byId = new Map(entities.map((ent) => [entityRef(ent), ent]));
+  const entities: ParsedExtraction["entities"] = [];
+  const byId = new Map<string, ParsedExtraction["entities"][number]>();
+  facts.entities.forEach((ent, i) => {
+    const checkEnt = merged.entities[i]!;
+    const eid = entityRef(ent);
+    const reasons = messages(
+      validateAgainstSchema({ entities: [checkEnt], relations: [] }, schema, { cardinality: false }),
+    );
+    if (keep("entity", eid, reasons)) {
+      entities.push(ent);
+      byId.set(eid, checkEnt);
+    }
+  });
   const graphTypes = await storedTypes(runner, ns, facts);
-  const relations = facts.relations.filter((rel) => {
+  const relations = facts.relations.filter((rel, i) => {
+    const checkRel = merged.relations[i]!;
     const ends = [rel.from_entity, rel.to_entity].flatMap((e) => byId.get(e) ?? []);
-    const found = validateAgainstSchema({ entities: ends, relations: [rel] }, schema, {
+    const found = validateAgainstSchema({ entities: ends, relations: [checkRel] }, schema, {
       graphTypes,
       cardinality: false,
     });

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field, PrivateAttr
 from pydantic import ValidationError as PydanticValidationError
@@ -14,6 +14,7 @@ from .._ops import (
     _require_optional_text,
     _validate_entity_identity,
     _validate_strength,
+    parse_time,
 )
 from .._serde import EDGE_TYPES, preference_stance_of
 from ..errors import ExtractionError, ValidationError
@@ -43,8 +44,14 @@ from .prompts import check_prompts, effective_instruction, effective_prompt, ren
 __all__ = ["LLMExtractor"]
 
 
+class _EntityOut(BaseModel):
+    type: str
+    name: str
+    aliases: list[str] | None = None
+
+
 class _EntitiesOut(BaseModel):
-    entities: list[EntityInput] = Field(default_factory=list)
+    entities: list[_EntityOut] = Field(default_factory=list)
 
 
 class _RelOut(BaseModel):
@@ -52,8 +59,30 @@ class _RelOut(BaseModel):
     type: str
     to_name: str
     properties: dict[str, JsonValue] = Field(default_factory=dict)
-    event_time: datetime | None = None
+    event_time: str | None = None
     _evidence: EvidenceInput | None = PrivateAttr(default=None)
+
+
+def _lenient_event_time(value: str | None) -> datetime | None:
+    """Parse an extracted event_time; a bare year 0001-9999 becomes Jan 1 UTC, and unparseable values become None.
+
+    @param value (str | None): ISO text, a four-digit year, or None.
+    @return (datetime | None): the time, or None when absent or not parseable.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) == 4 and text.isascii() and text.isdigit():
+        year = int(text)
+        if 1 <= year <= 9999:
+            return datetime(year, 1, 1, tzinfo=timezone.utc)
+        return None
+    try:
+        return parse_time(text, "event_time")
+    except ValidationError:
+        return None
 
 
 class _RelationsOut(BaseModel):
@@ -248,7 +277,10 @@ class LLMExtractor(_WarningSink):
                 try:
                     system, user = self._messages(kind, chunk.text)
                     result = await self._llm.generate(system=system, user=user, output=schema)
-                    return getattr(_checked_output(result, schema, kind), kind)
+                    items = getattr(_checked_output(result, schema, kind), kind)
+                    if kind == "entities":
+                        return [EntityInput(type=e.type, name=e.name, aliases=e.aliases or []) for e in items]
+                    return items
                 except ExtractionError:
                     raise
                 except Exception as exc:  # noqa: BLE001
@@ -385,7 +417,9 @@ class LLMExtractor(_WarningSink):
                             _PrefOut(subject_name=rel.from_name, stance=stance, key=key, value_name=rel.to_name)
                         )
                         continue
-                    add_relation(from_id, rel.type, to_id, rel.properties, rel.event_time, rel._evidence)
+                    add_relation(
+                        from_id, rel.type, to_id, rel.properties, _lenient_event_time(rel.event_time), rel._evidence
+                    )
                 except ValidationError as exc:
                     _dropped(sink, "relation", exc, rel.type)
 

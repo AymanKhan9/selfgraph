@@ -85,6 +85,8 @@ first problem by its path:
 | Problem | Message |
 |---------|---------|
 | Two entity types with the same name, ignoring case | `entities[1].name: duplicate entity type 'Person'` |
+| An entity alias that is another type's name or alias, ignoring case | `entities[1].aliases[0]: 'Person' is already a name or alias of entity type 'Person'` |
+| A relation alias that names another relation after normalization | `relations[1].aliases[0]: 'works at' is already a name or alias of relation type 'WORKS_AT'` |
 | A `parent` that is no entity type name or alias | `entities[1].parent: unknown type 'X'` |
 | A `parent` chain that loops back | `entities[0].parent: parent cycle 'A' -> 'B' -> 'A'` |
 | An endpoint type that is no entity type name or alias, in a schema with entities | `relations[0].to.types[1]: unknown type 'B'` |
@@ -92,6 +94,13 @@ first problem by its path:
 | `max_count` below 1 | `relations[0].from.max_count: must be >= 1` |
 | `min_count` below 0 | `relations[0].to.min_count: must be >= 0` |
 | `min_count` above `max_count` | `relations[0].from.min_count: min_count 2 is greater than max_count 1` |
+| A `min_count` or `max_count` with a fractional part (`2.0` is read as `2`) | `relations[0].from.max_count: expected integer` |
+| A `min_count` or `max_count` that is not a number, such as `true` or `"1"` | `relations[0].from.max_count: expected number` |
+| A `min_count` or `max_count` above 2^53 - 1, the largest integer JavaScript holds exactly | `relations[0].from.max_count: must be <= 9007199254740991` |
+| A `min_count` or `max_count` below -(2^53 - 1) | `relations[0].from.max_count: must be >= -9007199254740991` |
+
+A count outside that range is listed together with the first problem above, if any, one per line, as in
+`invalid schema:\n  relations[0].from.max_count: must be >= -9007199254740991\n  relations[0].from.max_count: must be >= 1`.
 
 Constructing `Schema(...)` or `Extraction(...)` directly raises the same
 `ValidationError`, never a raw pydantic error.
@@ -118,6 +127,13 @@ use the graph-level schema and mode.
 
 How checks are applied:
 
+- Cardinality counts distinct relation ids. Repeating a relation in one insert
+  counts it once; different explicit relation ids count separately, even when
+  their endpoints and type match.
+- An insert checks each entity and relation after entity resolution and after
+  merging its properties with what is already stored and other entries in the
+  same batch, so restating or extending a stored item does not require
+  repeating its required properties.
 - An `update` is checked on the state it would produce. Only violations it
   introduces count. A violation the stored record already had, say from before
   the schema was set, neither raises nor is logged again.
@@ -151,7 +167,7 @@ result full of `dropped_off_schema` warnings.
 | Code | Raised when |
 |------|-------------|
 | `unknown_entity_type` | An entity's type is not in the schema, and the schema lists at least one entity type. |
-| `missing_required_property` | A required property is absent. |
+| `missing_required_property` | A required property is absent or `None` (`null`). |
 | `property_type_mismatch` | A property value does not match its declared type. |
 | `unknown_relation_type` | A relation's type is not in the schema, and the schema lists at least one relation type. |
 | `endpoint_type_violation` | A relation endpoint is not one of the allowed types. |
@@ -199,6 +215,20 @@ The `contradiction` option decides what happens:
 
 `schema_mode="off"` does not stop these checks. `contradiction="off"` does (see
 [which option controls which warning](#which-option-controls-which-warning)).
+
+Deleting a relation at a `max_count` endpoint settles that endpoint again, as
+`supersede` would have without it. The newest `max_count` relations, retired ones
+included, are current afterwards, and a relation that stays retired is re-pointed
+to the one that now displaces it. A retirement by the LLM judge stays as it is
+(see [updating and deleting](resources.md#updating-and-deleting)).
+
+Moving a relation to another `event_time` settles its endpoints again the same
+way, under `supersede` and `llm`. That covers `relations.update` with a new
+`event_time` and an insert that restates a stored relation with a different
+one. A relation the moved one retired comes back when fewer than `max_count`
+newer facts remain at every endpoint that caps it, and the moved relation is
+retired when it is now the older fact. `relations.update` then returns it
+retired. The other modes leave the endpoint as it is.
 
 ```python
 graph = SelfGraph(store, schema=schema, contradiction="supersede")

@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -104,6 +105,14 @@ REL_TYPES = [
     "पिता",
     "पोता",
     "काम करता है!",
+    "uses k8s",
+    "USES_K8S",
+    "has 2fa",
+    "has 3d model",
+    "Has2FA",
+    "x2ß",
+    "ß\u0307",
+    "56İ",
 ]
 ENTITY_ID_INPUTS = [
     "T:X",
@@ -162,6 +171,7 @@ TEXTS = [
     "🚀 Rocket Labs launched from New Zealand. The Team cheered.",
     "He met She. They saw It, This! Those were Acme's. Neo4j and S3 work with GPT-4.",
     "The rain fell. A Storm hit Paris; Berlin, Rome: Madrid! Done?",
+    "Łukasz Nowak joined Ørsted in Århus. Иван Петров met Σωκράτης.",
     "# Acme Handbook\n\nAcme was founded in 2019 by Jane Doe.\nCompany Handbook\nAnn works at Acme.",
     "Jane Doe met\nBob Smith at Acme.",
     unicodedata.normalize(
@@ -564,10 +574,10 @@ def known_cases():
 
 CONTRADICTION_SCHEMA = {
     "relations": [
-        {"type": "WORKS_AT", "aliases": ["employed by", "CEO_OF"], "from": {"max_count": 1}},
+        {"type": "WORKS_AT", "aliases": ["employed by"], "from": {"max_count": 1}},
         {"type": "CEO_OF", "from": {"max_count": 1}, "to": {"max_count": 1}},
         {"type": "MEMBER_OF", "from": {"max_count": 2}},
-        {"type": "KNOWS", "aliases": ["meets"]},
+        {"type": "KNOWS"},
         {"type": "MEETS"},
     ]
 }
@@ -954,10 +964,13 @@ def chunk_cases():
     )
     by_chars = [c.__dict__ for c in chunking._chunk_by_chars(long_text, size=200, overlap=40)]
     by_tokens = [c.__dict__ for c in chunking.chunk_text(long_text, max_tokens=64, overlap_tokens=8)]
+    split_text = "भारत एक विशाल देश है। 東京は日本の首都です。 👩‍💻 <|endoftext|> �� café. " * 6 + " �" * 8
     return {
         "text": long_text,
         "by_chars": by_chars,
         "by_tokens": by_tokens,
+        "split_text": split_text,
+        "split_by_tokens": [c.__dict__ for c in chunking.chunk_text(split_text, max_tokens=7, overlap_tokens=2)],
         "count_tokens": [chunking.count_tokens(t) for t in TEXTS],
     }
 
@@ -1259,6 +1272,7 @@ def main():
         ],
         "chunks": chunk_cases(),
         "extract": extract_cases(),
+        "uppercase": "".join(re.findall(f"[{_marks.UPPERCASE_CLASS}]", "".join(map(chr, range(0x110000))))),
         "assemble": assemble_case(),
         "as_of": as_of_cases(),
         "known_at": known_cases(),

@@ -97,6 +97,7 @@ export const NO_DELETES: Readonly<DeleteResult> = Object.freeze({
   deleted_relation_versions: 0,
   deleted_decisions: 0,
   deleted_preference_versions: 0,
+  restored_relations: 0,
 });
 
 const RESERVED_LABELS = new Set(LABELS.map((t) => t.toLowerCase()));
@@ -423,6 +424,7 @@ export function aliasList(name: string, items: readonly string[]): string[] {
 
 const PAGE = 500;
 const BATCH = 1000;
+const RELATION_ID_BATCH = 256;
 
 /**
  * Call a skip/limit list function page by page until it runs dry or reaches the cap.
@@ -664,7 +666,16 @@ export async function deleteEvidence(runner: Runner, ns: string, targetId: strin
   await runner.deleteNodesBy(ns, L_EVIDENCE, { target_id: targetId });
 }
 
-export const precheckWrite = (runner: Runner, props: Props): void => runner.checkDocSize?.(props);
+export const precheckNodes = (runner: Runner, ns: string, label: string, rows: readonly NodeRow[]): void =>
+  runner.checkNodeWrites?.(ns, label, rows);
+
+export const precheckEdges = (
+  runner: Runner,
+  ns: string,
+  fromLabel: string,
+  toLabel: string,
+  rows: readonly EdgeWrite[],
+): void => runner.checkEdgeWrites?.(ns, fromLabel, toLabel, rows);
 
 async function entityKnown(runner: Runner, ns: string, eid: unknown, known: Set<string>): Promise<boolean> {
   if (typeof eid !== "string") throw new ValidationError(`entity reference must be a string id, got ${typeName(eid)}`);
@@ -957,7 +968,7 @@ export async function upsertEntities(
     out.push(current.get(eid)!);
   }
 
-  for (const props of writes.values()) precheckWrite(runner, props);
+  precheckNodes(runner, ns, L_ENTITY, [...writes]);
   for (const [eid, props] of writes) {
     const before = stored.get(eid);
     if (before !== undefined && props.type !== before.type)
@@ -1117,7 +1128,7 @@ export async function updateEntity(
     relevance: existing.relevance,
     relevance_at: existing.relevance_at,
   });
-  precheckWrite(runner, props);
+  precheckNodes(runner, ns, L_ENTITY, [[eid, props]]);
   if (type !== existing.type) await runner.removeNodeLabel(ns, L_ENTITY, eid, existing.type);
   await runner.upsertNode(ns, L_ENTITY, eid, props, { extra_label: type });
   return decodeEntity(props);
@@ -1306,10 +1317,15 @@ export async function repointSteps(
  * @param given (string): the entity id.
  * @return (DeleteResult): counts of what was removed.
  */
-export async function deleteEntity(runner: Runner, ns: string, given: string): Promise<DeleteResult> {
+export async function deleteEntity(
+  runner: Runner,
+  ns: string,
+  given: string,
+  caps?: ReadonlyMap<string, RelationCap> | null,
+): Promise<DeleteResult> {
   const eid = ids.canonicalEntityId(given);
   if (!(await runner.nodeExists(ns, L_ENTITY, eid))) throw new NotFoundError("Entity", eid);
-  return deleteEntities(runner, ns, [eid]);
+  return deleteEntities(runner, ns, [eid], caps);
 }
 
 /**
@@ -1402,15 +1418,23 @@ async function deleteNodesWhere(
  * @param given (readonly string[]): the canonical entity ids.
  * @return (DeleteResult): counts of what was removed.
  */
-export async function deleteEntities(runner: Runner, ns: string, given: readonly string[]): Promise<DeleteResult> {
+export async function deleteEntities(
+  runner: Runner,
+  ns: string,
+  given: readonly string[],
+  caps?: ReadonlyMap<string, RelationCap> | null,
+): Promise<DeleteResult> {
   const counts = { ...NO_DELETES };
   const eids = [...(await nodesById(runner, ns, L_ENTITY, dedupList(given))).keys()];
   if (!eids.length) return counts;
   const doomed = new Set(eids);
   const seen = new Map<string, string>();
+  const newest = new Map<string, EdgeRow>();
   for (const side of ["from_in", "to_in"] as const) {
     for (const edge of await edgesAt(runner, ns, { from_label: L_ENTITY, to_label: L_ENTITY }, side, eids)) {
-      if (isRelationType(edge.type)) seen.set(JSON.stringify([idOf(edge.props), revisionOf(edge)]), idOf(edge.props));
+      if (!isRelationType(edge.type)) continue;
+      seen.set(JSON.stringify([idOf(edge.props), revisionOf(edge)]), idOf(edge.props));
+      keepNewest(newest, edge);
     }
   }
   const rids = dedupList([...seen.values()]);
@@ -1452,6 +1476,7 @@ export async function deleteEntities(runner: Runner, ns: string, given: readonly
     for (const batch of batches(merges)) await runner.deleteNodes(ns, L_MERGE, batch);
   }
   counts.deleted_entities = eids.length;
+  counts.restored_relations = await resettleEndpoints(runner, ns, newest.values(), caps, new Date());
   return counts;
 }
 
@@ -1473,11 +1498,16 @@ export function addCounts(total: DeleteResult, counts: DeleteResult): void {
  * @param rids (readonly string[]): the relation ids.
  * @return (DeleteResult): counts of what was removed.
  */
-export async function deleteRelations(runner: Runner, ns: string, rids: readonly string[]): Promise<DeleteResult> {
+export async function deleteRelations(
+  runner: Runner,
+  ns: string,
+  rids: readonly string[],
+  caps?: ReadonlyMap<string, RelationCap> | null,
+): Promise<DeleteResult> {
   const counts = { ...NO_DELETES };
   for (const rid of rids) {
     if (!(await relationExists(runner, ns, rid))) continue;
-    addCounts(counts, await deleteRelation(runner, ns, rid));
+    addCounts(counts, await deleteRelation(runner, ns, rid, caps));
   }
   return counts;
 }
@@ -1539,7 +1569,7 @@ async function writeRelationVersion(
   retire: boolean,
 ): Promise<Relation> {
   if (retire) {
-    precheckWrite(runner, props);
+    precheckEdges(runner, ns, L_ENTITY, L_ENTITY, [[ends.type, ends.from_entity, ends.to_entity, props]]);
     await runner.updateCurrentEdge(ns, idOf(props), { is_current: false });
   }
   rejectReservedRelType(ends.type, ends.type);
@@ -1644,16 +1674,34 @@ async function newestPreference(runner: Runner, ns: string, pid: string): Promis
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param keyed (ReadonlyArray<readonly [string, Pick<ParsedRelationInput, "id" | "from_entity">]>): (relation id, input) pairs.
+ * @param allIds (boolean): look up every id across all endpoints, since an explicit id can match a generated id.
  * @return (Map<string, EdgeRow>): each found relation's current edge row, else its newest edge row, by id.
  */
 export async function currentRelations(
   runner: Runner,
   ns: string,
   keyed: ReadonlyArray<readonly [string, Pick<ParsedRelationInput, "id" | "from_entity">]>,
+  allIds = false,
 ): Promise<Map<string, EdgeRow>> {
   const wanted = new Set(keyed.map(([rid]) => rid));
   const found = new Map<string, EdgeRow>();
-  const versions = (await runner.edgeVersions?.(ns, L_ENTITY, L_ENTITY, dedupList(keyed.map(([rid]) => rid)))) ?? null;
+  const ids = [...wanted];
+  let versions: EdgeRow[] | null = null;
+  if (runner.edgeVersions) {
+    if (allIds) {
+      versions = [];
+      for (const batch of batches(ids, RELATION_ID_BATCH)) {
+        const rows = await runner.edgeVersions(ns, L_ENTITY, L_ENTITY, batch);
+        if (rows === null) {
+          versions = null;
+          break;
+        }
+        for (const edge of rows) versions.push(edge);
+      }
+    } else {
+      versions = await runner.edgeVersions(ns, L_ENTITY, L_ENTITY, ids);
+    }
+  }
   for (const currentOnly of [true, false]) {
     const pending = dedupList(keyed.filter(([rid]) => !found.has(rid)).map(([, rel]) => rel.from_entity));
     const filter = { from_label: L_ENTITY, to_label: L_ENTITY, current_only: currentOnly };
@@ -1661,18 +1709,54 @@ export async function currentRelations(
     const edges =
       versions === null
         ? await edgesAt(runner, ns, filter, "from_in", pending)
-        : versions.filter((e) => sources.has(e.from_id) && (Boolean(e.props.is_current) || !currentOnly));
+        : versions.filter((e) => (allIds || sources.has(e.from_id)) && (Boolean(e.props.is_current) || !currentOnly));
     for (const edge of edges) {
       if (wanted.has(idOf(edge.props)) && isRelationType(edge.type)) keepNewest(found, edge);
     }
     for (const rid of found.keys()) wanted.delete(rid);
   }
-  for (const [rid, rel] of keyed) {
-    if (!rel.id || found.has(rid)) continue;
+  if (allIds && versions !== null) return found;
+  const missing = dedupList(keyed.filter(([rid, rel]) => (allIds || rel.id) && !found.has(rid)).map(([rid]) => rid));
+  for (const rid of missing) {
     const edge = newestEdge(await typedEdgeVersions(runner, ns, rid, isRelationType));
     if (edge !== null) found.set(rid, edge);
   }
   return found;
+}
+
+/**
+ * Reject conflicting relation ids before the insert writes any facts or provenance.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): namespace.
+ * @param relations (readonly ParsedRelationInput[]): the final canonical relations to write.
+ * @return (Promise<void>): nothing; raises ValidationError if a relation id names different endpoints or types.
+ */
+export async function requireRelationIdentities(
+  runner: Runner,
+  ns: string,
+  relations: readonly ParsedRelationInput[],
+): Promise<void> {
+  if (!relations.length) return;
+  const keyed = relations.map((rel) => {
+    const rtype = ids.normalizeRelType(rel.type);
+    const rid = rel.id ?? ids.relationId(rel.from_entity, rtype, rel.to_entity);
+    return [rid, rel, [rel.from_entity, rtype, rel.to_entity]] as const;
+  });
+  const stored = await currentRelations(
+    runner,
+    ns,
+    keyed.map(([rid, rel]) => [rid, rel]),
+    true,
+  );
+  const identities = new Map<string, readonly [string, string, string]>(
+    [...stored].map(([rid, edge]) => [rid, [edge.from_id, edge.type, edge.to_id]]),
+  );
+  for (const [rid, , identity] of keyed) {
+    const previous = identities.get(rid);
+    if (previous === undefined) identities.set(rid, identity);
+    else requireSameEnds(rid, previous, identity);
+  }
 }
 
 export interface RelationCap {
@@ -1707,6 +1791,16 @@ const restatedEventTime = (named: Date | null, stored: Date | null, keepStored: 
   return keepStored ? stored : null;
 };
 
+/**
+ * Tell whether a write at an effective time brings a retired relation back as current.
+ *
+ * @param prev (Relation): the stored version.
+ * @param effective (Date): the write's effective time.
+ * @return (boolean): true when prev is retired and the write is not earlier than its invalidation.
+ */
+const reasserts = (prev: Relation, effective: Date): boolean =>
+  !prev.is_current && (prev.invalidated_at === null || epochMicros(effective) >= epochMicros(prev.invalidated_at));
+
 type Slot = readonly [string, string, string];
 type Rank = readonly [number, number, number];
 
@@ -1728,6 +1822,26 @@ const rankOf = (rel: Relation): Rank => [epochMicros(effectiveTime(rel)), rel.re
 function compareRanked(a: readonly [Rank, string], b: readonly [Rank, string]): number {
   for (let i = 0; i < 3; i++) if (a[0][i] !== b[0][i]) return a[0][i]! - b[0][i]!;
   return comparePy(a[1], b[1]);
+}
+
+/**
+ * List the constrained endpoint groups a relation belongs to, with each group's max_count.
+ *
+ * @param caps (ReadonlyMap<string, RelationCap>): the max_count limits by normalized relation type and alias.
+ * @param rtype (string): the normalized relation type.
+ * @param fromEntity (string): the source entity id.
+ * @param toEntity (string): the destination entity id.
+ * @return (Array<[Slot, number]>): ((canonical type, side, endpoint), max_count) pairs.
+ */
+function capSlots(
+  caps: ReadonlyMap<string, RelationCap>,
+  rtype: string,
+  fromEntity: string,
+  toEntity: string,
+): Array<[Slot, number]> {
+  const cap = caps.get(rtype);
+  if (cap === undefined) return [];
+  return cap.limits.map(([side, limit]) => [[cap.canonical, side, side === "from" ? fromEntity : toEntity], limit]);
 }
 
 export class Contradictions {
@@ -1759,31 +1873,17 @@ export class Contradictions {
       if (rel.invalidated_by !== null && rel.invalidated_at !== null) {
         this.ended.set(rel.id, [rel.invalidated_by, rel.invalidated_at]);
       }
-      for (const [slot] of this.slots(rel.type, rel.from_entity, rel.to_entity)) {
+      for (const [slot] of capSlots(this.caps, rel.type, rel.from_entity, rel.to_entity)) {
         const key = JSON.stringify(slot);
         this.past.set(key, (this.past.get(key) ?? new Map<string, Rank>()).set(rel.id, rankOf(rel)));
       }
     }
     for (const rel of current) {
       if (rel.certified_at !== null) this.certified.add(rel.id);
-      for (const [slot] of this.slots(rel.type, rel.from_entity, rel.to_entity)) {
+      for (const [slot] of capSlots(this.caps, rel.type, rel.from_entity, rel.to_entity)) {
         this.seat(slot, rel.id, rankOf(rel), effectiveTime(rel));
       }
     }
-  }
-
-  /**
-   * List the constrained endpoint groups a relation belongs to, with each group's max_count.
-   *
-   * @param rtype (string): the normalized relation type.
-   * @param fromEntity (string): the source entity id.
-   * @param toEntity (string): the destination entity id.
-   * @return (Array<[Slot, number]>): ((canonical type, side, endpoint), max_count) pairs.
-   */
-  private slots(rtype: string, fromEntity: string, toEntity: string): Array<[Slot, number]> {
-    const cap = this.caps.get(rtype);
-    if (cap === undefined) return [];
-    return cap.limits.map(([side, limit]) => [[cap.canonical, side, side === "from" ? fromEntity : toEntity], limit]);
   }
 
   private seat(slot: Slot, rid: string, rank: Rank, effective: Date): void {
@@ -1841,7 +1941,7 @@ export class Contradictions {
     if (certified) this.certified.add(rid);
     else this.certified.delete(rid);
     const warnings: InsertWarning[] = [];
-    const slots = this.slots(rtype, fromEntity, toEntity);
+    const slots = capSlots(this.caps, rtype, fromEntity, toEntity);
     for (const [slot, limit] of slots) {
       const key = JSON.stringify(slot);
       const group = this.groups.get(key) ?? new Map<string, Rank>();
@@ -1912,7 +2012,7 @@ export class Contradictions {
         const by = newer[limit - 1]![1];
         const at = this.times.get(by)!;
         if (!retired.has(old)) slots.push(old);
-        if (!retired.has(old) || at.getTime() < retired.get(old)![1].getTime()) {
+        if (!retired.has(old) || epochMicros(at) < epochMicros(retired.get(old)![1])) {
           retired.set(old, [by, at]);
           why.set(old, [key, limit, ranked.length >= limit ? ranked[limit - 1]! : by]);
         }
@@ -1923,7 +2023,10 @@ export class Contradictions {
         if (ended === undefined || newer.length < limit) continue;
         const by = newer[limit - 1]![1];
         const at = this.times.get(by)!;
-        if ((by !== ended[0] || at.getTime() !== ended[1].getTime()) && (facts.has(ended[0]) || at < ended[1])) {
+        if (
+          (by !== ended[0] || epochMicros(at) !== epochMicros(ended[1])) &&
+          (facts.has(ended[0]) || epochMicros(at) < epochMicros(ended[1]))
+        ) {
           retired.set(rid, [by, at]);
           this.ended.set(rid, [by, at]);
         }
@@ -1977,6 +2080,37 @@ async function constrainedCurrent(
   caps: ReadonlyMap<string, RelationCap>,
   ends: Iterable<readonly [string, string, string]>,
 ): Promise<[Map<string, EdgeRow>, Map<string, EdgeRow>]> {
+  const rows = [...(await endpointEdges(runner, ns, caps, ends)).values()];
+  return [
+    new Map(rows.filter((e) => e.props.is_current).map((e) => [idOf(e.props), e])),
+    new Map(
+      rows
+        .filter(
+          (e) =>
+            !e.props.is_current &&
+            e.props.invalidated_at &&
+            !(typeof e.props.invalidated_by === "string" && e.props.invalidated_by.startsWith("sv:")),
+        )
+        .map((e) => [idOf(e.props), e]),
+    ),
+  ];
+}
+
+/**
+ * Read the newest version of every relation at the constrained endpoints of some relations.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param caps (ReadonlyMap<string, RelationCap>): the schema's max_count limits by relation type.
+ * @param ends (Iterable<readonly [string, string, string]>): (normalized type, source id, destination id) of each relation.
+ * @return (Map<string, EdgeRow>): each relation's newest edge row by id, in read order.
+ */
+async function endpointEdges(
+  runner: Runner,
+  ns: string,
+  caps: ReadonlyMap<string, RelationCap>,
+  ends: Iterable<readonly [string, string, string]>,
+): Promise<Map<string, EdgeRow>> {
   const found = new Map<string, EdgeRow>();
   const seen = new Set<string>();
   for (const [rtype, fromEntity, toEntity] of ends) {
@@ -1993,11 +2127,7 @@ async function constrainedCurrent(
       }
     }
   }
-  const rows = [...found.values()];
-  return [
-    new Map(rows.filter((e) => e.props.is_current).map((e) => [idOf(e.props), e])),
-    new Map(rows.filter((e) => !e.props.is_current && e.props.invalidated_at).map((e) => [idOf(e.props), e])),
-  ];
+  return found;
 }
 
 /**
@@ -2009,12 +2139,16 @@ async function constrainedCurrent(
  * @param ns (string): the namespace.
  * @param caps (ReadonlyMap<string, RelationCap> | null): the max_count limits, or null without a schema.
  * @param relations (readonly ParsedRelationInput[]): the relations about to be written.
+ * @param defaultEventTime (Date | null): fallback event time.
+ * @param createdAt (Date): timestamp of the planned write.
  */
 export async function requireMaxCount(
   runner: Runner,
   ns: string,
   caps: ReadonlyMap<string, RelationCap> | null,
   relations: readonly ParsedRelationInput[],
+  defaultEventTime: Date | null,
+  createdAt: Date,
 ): Promise<void> {
   const keyed = relations.map((rel) => {
     const rtype = ids.normalizeRelType(rel.type);
@@ -2026,10 +2160,24 @@ export async function requireMaxCount(
     { contradiction: "strict", caps },
     keyed.map(({ rtype, rel }) => [rtype, rel.from_entity, rel.to_entity] as const),
   );
-  const at = new Date();
-  const rank: Rank = [epochMicros(at), 0, epochMicros(at)];
-  for (const { rid, rtype, rel } of tracker ? keyed : [])
-    tracker!.admit(rid, rtype, rel.from_entity, rel.to_entity, rank, at);
+  if (tracker === null) return;
+  const stored = await currentRelations(
+    runner,
+    ns,
+    keyed.map(({ rid, rel }) => [rid, rel] as const),
+  );
+  const admitted = new Set<string>();
+  for (const { rid, rtype, rel } of keyed) {
+    const effective = rel.event_time ?? defaultEventTime ?? createdAt;
+    const edge = stored.get(rid);
+    if (edge !== undefined && !admitted.has(rid)) {
+      const prev = relationOf(edge);
+      if (!prev.is_current && !reasserts(prev, effective)) continue;
+    }
+    const rank: Rank = [epochMicros(effective), 0, epochMicros(createdAt)];
+    tracker.admit(rid, rtype, rel.from_entity, rel.to_entity, rank, effective);
+    admitted.add(rid);
+  }
 }
 
 /**
@@ -2054,6 +2202,7 @@ function retiredEdge(edge: EdgeRow, by: string, at: Date, known: Date): EdgeRow 
   if (!edge.props.is_current) {
     props.revision = (edge.props.revision as number) + 1;
     props.created_at = toIso(known);
+    props.event_time = edge.props.event_time || edge.props.created_at;
   }
   return { ...edge, props };
 }
@@ -2160,10 +2309,136 @@ export async function retireRelations(
   for (const [edge, by, at] of retirements) {
     if (!gone.has(idOf(edge.props))) gone.set(idOf(edge.props), retiredEdge(edge, by, at, known));
   }
-  for (const edge of gone.values()) precheckWrite(runner, edge.props);
   const rows: EdgeWrite[] = [...gone.values()].map((e) => [e.type, e.from_id, e.to_id, e.props]);
+  precheckEdges(runner, ns, L_ENTITY, L_ENTITY, rows);
   if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
   return [...gone.values()].map(relationOf);
+}
+
+/**
+ * Settle again each max_count endpoint a deleted or moved relation sat at, as supersede would settle it now.
+ *
+ * Every relation a supersede retired at such an endpoint is admitted back with its stored rank, and
+ * Contradictions.settle settles every endpoint those relations sit at, as an insert settles it, with retired history
+ * counted at each one. One that comes back is written as a new current revision with its properties and source count,
+ * taking effect when the retired version did, so as_of reads show it valid from its start. One that stays retired, or a
+ * retired one whose invalidation settle corrects, takes a new revision naming the relation and time that now displace
+ * it, so known_at reads still see the earlier retirement. A current one settle retires is retired as a supersede
+ * retires it. A retirement by replace_source or the LLM judge names no relation of the endpoint, so it is left as it
+ * is. Both endpoints of each deleted or moved relation are locked before they are read.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param given (Iterable<EdgeRow>): the edge rows of the deleted relations, read before they were deleted, or of the new versions of the moved ones.
+ * @param caps (ReadonlyMap<string, RelationCap> | null | undefined): the schema's max_count limits, or null without a schema.
+ * @param at (Date): the write's timestamp, the created_at of each restored revision.
+ * @return (number): how many relations came back.
+ */
+export async function resettleEndpoints(
+  runner: Runner,
+  ns: string,
+  given: Iterable<EdgeRow>,
+  caps: ReadonlyMap<string, RelationCap> | null | undefined,
+  at: Date,
+): Promise<number> {
+  const limits = caps ?? new Map<string, RelationCap>();
+  const slotsOf = (edge: EdgeRow) => capSlots(limits, edge.type, edge.from_id, edge.to_id);
+  const endsOf = (edges: readonly EdgeRow[]) => edges.map((e) => [e.type, e.from_id, e.to_id] as const);
+  const moved = [...given].filter((edge) => slotsOf(edge).length);
+  if (!moved.length) return 0;
+  for (const eid of dedupList(moved.flatMap((edge) => [edge.from_id, edge.to_id]))) {
+    await runner.lockNode(ns, L_ENTITY, eid);
+  }
+  const found = await endpointEdges(runner, ns, limits, endsOf(moved));
+  const members = new Map<string, Set<string>>();
+  for (const edge of [...moved, ...found.values()]) {
+    for (const [slot] of slotsOf(edge)) {
+      const key = JSON.stringify(slot);
+      members.set(key, (members.get(key) ?? new Set<string>()).add(idOf(edge.props)));
+    }
+  }
+  const freed = new Set(moved.flatMap((edge) => slotsOf(edge).map(([slot]) => JSON.stringify(slot))));
+  const stale = [...found.values()].filter(
+    (edge) =>
+      !edge.props.is_current &&
+      edge.props.invalidated_at &&
+      slotsOf(edge).some(([slot]) => {
+        const key = JSON.stringify(slot);
+        return freed.has(key) && members.get(key)!.has(edge.props.invalidated_by as string);
+      }),
+  );
+  if (!stale.length) return 0;
+  const [tracker, read] = await contradictionCheck(
+    runner,
+    ns,
+    { contradiction: "supersede", caps: limits },
+    endsOf(stale),
+  );
+  for (const edge of stale) {
+    const rel = relationOf(edge);
+    tracker!.admit(rel.id, rel.type, rel.from_entity, rel.to_entity, rankOf(rel), effectiveTime(rel));
+  }
+  const [ended] = tracker!.settle();
+  const rows: EdgeWrite[] = [];
+  for (const edge of stale) {
+    if (ended.has(idOf(edge.props))) continue;
+    const rel = relationOf(edge);
+    const props = encodeRelationProps({
+      ns,
+      id: rel.id,
+      revision: rel.revision + 1,
+      properties: rel.properties,
+      event_time: effectiveTime(rel),
+      created_at: at,
+      is_current: true,
+      source_count: rel.source_count,
+    });
+    rows.push([edge.type, edge.from_id, edge.to_id, props]);
+  }
+  const restored = rows.length;
+  for (const [rid, [by, when]] of ended) {
+    const edge = read.get(rid)!;
+    if (by === edge.props.invalidated_by && toIso(when) === edge.props.invalidated_at) continue;
+    const gone = retiredEdge(edge, by, when, at);
+    rows.push([gone.type, gone.from_id, gone.to_id, gone.props]);
+  }
+  precheckEdges(runner, ns, L_ENTITY, L_ENTITY, rows);
+  if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
+  return restored;
+}
+
+/**
+ * Re-point the relations some deleted duplicates had retired to the survivor they were folded into, in place.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param deleted (readonly EdgeRow[]): the edge rows of the deleted duplicates, each with its id, type, and endpoints.
+ * @param survivor (string): the relation id the duplicates were folded into.
+ */
+export async function repointRetired(
+  runner: Runner,
+  ns: string,
+  deleted: readonly EdgeRow[],
+  survivor: string,
+): Promise<void> {
+  const gone = new Set(deleted.map((e) => idOf(e.props)));
+  const found = new Map<string, EdgeRow>();
+  for (const [side, end] of [
+    ["from_in", "from_id"],
+    ["to_in", "to_id"],
+  ] as const) {
+    const anchors = dedupList(deleted.map((e) => e[end]));
+    for (const edge of await edgesAt(runner, ns, { from_label: L_ENTITY, to_label: L_ENTITY }, side, anchors)) {
+      if (isRelationType(edge.type)) keepNewest(found, edge);
+    }
+  }
+  const rows: EdgeWrite[] = [...found]
+    .sort((a, b) => comparePy(a[0], b[0]))
+    .map(([, e]) => e)
+    .filter((e) => !gone.has(idOf(e.props)) && !e.props.is_current && gone.has(e.props.invalidated_by as string))
+    .map((e) => [e.type, e.from_id, e.to_id, { ...e.props, invalidated_by: survivor }]);
+  precheckEdges(runner, ns, L_ENTITY, L_ENTITY, rows);
+  if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
 }
 
 /**
@@ -2225,6 +2500,7 @@ export async function upsertRelations(
   const writes = new Map<string, readonly [string, Props]>();
   const retires = new Map<string, readonly [string, Props]>();
   const out: Array<readonly [string, number, Relation]> = [];
+  const moved = new Set<string>();
   for (const { rid, rtype, rel } of keyed) {
     const named = rel.event_time ?? defaultEventTime ?? null;
     let edge = current.get(rid);
@@ -2251,10 +2527,9 @@ export async function upsertRelations(
       const effective = eventTime ?? createdAt;
       const sources = prev.source_count + takeGained(gained, rid);
       const mergedProperties = mergeProps(prev.properties, rel.properties);
-      const reassert =
-        !prev.is_current &&
-        (prev.invalidated_at === null || epochMicros(effective) >= epochMicros(prev.invalidated_at));
+      const reassert = reasserts(prev, effective);
       const unchanged = deepEqual(prev.properties, mergedProperties) && toIso(prev.event_time) === toIso(eventTime);
+      if (eventTime != null && toIso(prev.event_time) !== toIso(eventTime)) moved.add(rid);
       if (unchanged && !reassert) {
         write = sources !== prev.source_count;
         props = { ...edge.props, source_count: sources };
@@ -2310,15 +2585,29 @@ export async function upsertRelations(
     current.set(old, gone);
   }
 
-  for (const [, props] of [...writes.values(), ...retires.values()]) precheckWrite(runner, props);
-  for (const batch of [writes, retires]) {
-    const rows: EdgeWrite[] = [...batch.values()].map(([rid, props]) => {
+  const batched = [writes, retires].map((batch): EdgeWrite[] =>
+    [...batch.values()].map(([rid, props]) => {
       const edge = current.get(rid)!;
       return [edge.type, edge.from_id, edge.to_id, props];
-    });
+    }),
+  );
+  precheckEdges(runner, ns, L_ENTITY, L_ENTITY, batched.flat());
+  for (const rows of batched) {
     if (rows.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
   }
   await writeEvidence(runner, ns, records, createdAt);
+  if (options.contradiction === "supersede" && moved.size) {
+    await resettleEndpoints(
+      runner,
+      ns,
+      [...moved].map((rid) => current.get(rid)!),
+      options.caps,
+      createdAt,
+    );
+    const stored = new Map<string, Relation>();
+    for (const rid of dedupList(out.map(([rid]) => rid))) stored.set(rid, (await newestRelation(runner, ns, rid))!);
+    return out.map(([rid]) => stored.get(rid)!);
+  }
   return out.map(([rid, revision, rel]) => {
     const key = JSON.stringify([rid, revision]);
     const final = retires.get(key) ?? writes.get(key);
@@ -2414,16 +2703,10 @@ export async function createRelation(
     const own = ended.get(rid);
     if (own !== undefined) written = retiredEdge(edge, ...own, createdAt).props;
   }
-  for (const write of [written, ...retires.map((e) => e.props)]) precheckWrite(runner, write);
+  const retired: EdgeWrite[] = retires.map((e) => [e.type, e.from_id, e.to_id, e.props]);
+  precheckEdges(runner, ns, L_ENTITY, L_ENTITY, [[ends.type, ends.from_entity, ends.to_entity, written], ...retired]);
   const rel = await writeRelationVersion(runner, ns, ends, written, false);
-  if (retires.length) {
-    await runner.createEdges(
-      ns,
-      L_ENTITY,
-      L_ENTITY,
-      retires.map((e) => [e.type, e.from_id, e.to_id, e.props]),
-    );
-  }
+  if (retired.length) await runner.createEdges(ns, L_ENTITY, L_ENTITY, retired);
   await writeEvidence(runner, ns, records, createdAt);
   if (prior !== null) {
     options.warnings?.push(
@@ -2486,14 +2769,16 @@ async function lockCurrent<T>(
 }
 
 /**
- * Create a new version of a relation with changed properties; an unchanged update is a no-op.
+ * Create a new version of a relation, settling its max_count endpoints again when supersede moves its event_time; an
+ * unchanged update is a no-op.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
  * @param rid (string): the relation id.
  * @param args (UpdateRelationArgs): the properties to set and remove, a new valid time, and evidence to add.
  * @param schemaCheck (SchemaCheck | undefined): checks the resulting relation against the schema before the write, given the stored version too so only violations the update introduces count.
- * @return (Relation): the current version; throws ValidationError for a relation a contradiction invalidated.
+ * @param options (ContradictionOptions): "supersede" settles the endpoints again when event_time moves, against the max_count limits; any other mode leaves them as they are, since an update adds no relation.
+ * @return (Relation): the new version, current unless supersede retired it; throws ValidationError for a relation a contradiction invalidated.
  */
 export async function updateRelation(
   runner: Runner,
@@ -2501,6 +2786,7 @@ export async function updateRelation(
   rid: string,
   args: UpdateRelationArgs,
   schemaCheck?: SchemaCheck,
+  options: ContradictionOptions = {},
 ): Promise<Relation> {
   requireJsonMapping("set_properties", args.set_properties);
   requireList("remove_properties", args.remove_properties);
@@ -2553,6 +2839,11 @@ export async function updateRelation(
   });
   const rel = await writeRelationVersion(runner, ns, current, props, true);
   await writeEvidence(runner, ns, records, createdAt);
+  if (options.contradiction === "supersede" && toIso(newEventTime) !== toIso(current.event_time)) {
+    const edge = { type: rel.type, from_id: rel.from_entity, to_id: rel.to_entity, props };
+    await resettleEndpoints(runner, ns, [edge], options.caps, createdAt);
+    return (await newestRelation(runner, ns, rid))!;
+  }
   return rel;
 }
 
@@ -2737,21 +3028,39 @@ export async function relationsAsOf(
     (e) => isRelationType(e.type),
   );
   const picked = pickAsOf(edges, relationOf, asOf);
-  if (asOf.known === null || !countSources || !picked.length) return picked;
+  return countSources ? withKnownSources(runner, ns, picked, asOf.known) : picked;
+}
+
+/**
+ * Count distinct sources whose evidence was recorded by the knowledge cutoff.
+ *
+ * @param runner (Runner): graph reader.
+ * @param ns (string): namespace.
+ * @param records (T[]): entities or relations to recount.
+ * @param known (Date | null): knowledge cutoff, or null to keep the stored counts.
+ * @return (Promise<T[]>): records with the source counts visible at the cutoff.
+ */
+export async function withKnownSources<T extends Entity | Relation>(
+  runner: Runner,
+  ns: string,
+  records: T[],
+  known: Date | null,
+): Promise<T[]> {
+  if (known === null || !records.length) return records;
   const sources = new Map<string, Set<string>>();
   for (const row of await nodesWhere(
     runner,
     ns,
     L_EVIDENCE,
     "target_id",
-    picked.map((r) => r.id),
+    records.map((r) => r.id),
   )) {
-    if (!knownBy(fromIso(row.created_at), asOf.known)) continue;
+    if (!knownBy(fromIso(row.created_at), known)) continue;
     const target = row.target_id as string;
     if (!sources.has(target)) sources.set(target, new Set());
     sources.get(target)!.add(row.source_id as string);
   }
-  return picked.map((r) => ({ ...r, source_count: sources.get(r.id)?.size ?? 0 }));
+  return records.map((r) => ({ ...r, source_count: sources.get(r.id)?.size ?? 0 }));
 }
 
 /**
@@ -2820,13 +3129,14 @@ export async function certifyRelation(
     certified_by: by,
     certifications_json: dumps(history),
   };
-  precheckWrite(runner, props);
-  await runner.createEdges(ns, L_ENTITY, L_ENTITY, [[edge.type, edge.from_id, edge.to_id, props]]);
+  const rows: EdgeWrite[] = [[edge.type, edge.from_id, edge.to_id, props]];
+  precheckEdges(runner, ns, L_ENTITY, L_ENTITY, rows);
+  await runner.createEdges(ns, L_ENTITY, L_ENTITY, rows);
   return relationOf({ ...edge, props });
 }
 
 /**
- * List the entities and relations that have evidence from any version of a source.
+ * List the entities and relations that have evidence from any unreplaced version of a source.
  *
  * @param runner (Runner): the graph runner.
  * @param ns (string): the namespace.
@@ -2834,8 +3144,12 @@ export async function certifyRelation(
  * @return (Set<string>): the evidence target ids.
  */
 export async function sourceTargets(runner: Runner, ns: string, sourceId: string): Promise<Set<string>> {
+  const versions = await runner.childNodes(ns, L_SOURCE, ids.sourceNodeId(sourceId), R_HAS_VERSION, L_SOURCE_VERSION);
+  const replaced = new Set(versions.filter((row) => (row.replaced_by ?? null) !== null).map((row) => row.id as string));
   const rows = await scan(nodeListing(runner, ns, L_EVIDENCE, { equals: { source_id: sourceId } }), Infinity, BATCH);
-  return new Set(rows.map((row) => row.target_id as string));
+  return new Set(
+    rows.filter((row) => !replaced.has(row.source_version as string)).map((row) => row.target_id as string),
+  );
 }
 
 /**
@@ -2936,14 +3250,26 @@ export async function replaceSource(
  * @param rid (string): the relation id.
  * @return (DeleteResult): counts of what was removed.
  */
-export async function deleteRelation(runner: Runner, ns: string, rid: string): Promise<DeleteResult> {
+export async function deleteRelation(
+  runner: Runner,
+  ns: string,
+  rid: string,
+  caps?: ReadonlyMap<string, RelationCap> | null,
+): Promise<DeleteResult> {
   requireStr("relation id", rid);
-  if (!(await relationExists(runner, ns, rid))) throw new NotFoundError("Relation", rid);
+  const newest = newestEdge(await typedEdgeVersions(runner, ns, rid, isRelationType));
+  if (newest === null) throw new NotFoundError("Relation", rid);
   const traceIds = await tracesTouchingRelations(runner, ns, [rid]);
   const deletedVersions = await runner.deleteEdges(ns, rid);
   await deleteEvidence(runner, ns, rid);
   const deletedDecisions = await deleteTraces(runner, ns, traceIds);
-  return { ...NO_DELETES, deleted_relation_versions: deletedVersions, deleted_decisions: deletedDecisions };
+  const restored = await resettleEndpoints(runner, ns, [newest], caps, new Date());
+  return {
+    ...NO_DELETES,
+    deleted_relation_versions: deletedVersions,
+    deleted_decisions: deletedDecisions,
+    restored_relations: restored,
+  };
 }
 
 async function ensureProfile(runner: Runner, ns: string, subjectId: string, createdAt: Date): Promise<string> {
@@ -2987,19 +3313,12 @@ async function writePreferenceVersion(
   props: Props,
   retire: boolean,
 ): Promise<Preference> {
+  const type = preferenceEdgeType(ends.stance);
   if (retire) {
-    precheckWrite(runner, props);
+    precheckEdges(runner, ns, L_PROFILE, L_ENTITY, [[type, ends.profile_id, ends.value_entity, props]]);
     await runner.updateCurrentEdge(ns, idOf(props), { is_current: false });
   }
-  await runner.createEdge(
-    ns,
-    preferenceEdgeType(ends.stance),
-    L_PROFILE,
-    ends.profile_id,
-    L_ENTITY,
-    ends.value_entity,
-    props,
-  );
+  await runner.createEdge(ns, type, L_PROFILE, ends.profile_id, L_ENTITY, ends.value_entity, props);
   return decodePreference(props, ends);
 }
 
@@ -3132,7 +3451,10 @@ export async function createPreference(runner: Runner, ns: string, given: Create
     created_at: new Date(),
     is_current: true,
   });
-  precheckWrite(runner, props);
+  const type = preferenceEdgeType(args.stance);
+  precheckEdges(runner, ns, L_PROFILE, L_ENTITY, [
+    [type, ids.profileId(args.subject_entity), args.value_entity, props],
+  ]);
   const profileId = await ensureProfile(runner, ns, args.subject_entity, new Date());
   await runner.lockNode(ns, L_PROFILE, profileId);
   if (await preferenceExists(runner, ns, pid)) throw new ConflictError("Preference", pid);
@@ -3401,6 +3723,35 @@ export interface UpsertTraceArgs {
 }
 
 /**
+ * Report whether a stored trace has exactly the links its fields name: actor, outcome, alternatives, step ends.
+ *
+ * @param runner (Runner): the graph runner.
+ * @param ns (string): the namespace.
+ * @param trace (DecisionTrace): the stored trace, with its steps.
+ * @return (boolean): true when no link is missing, extra, or repeated.
+ */
+async function traceLinksIntact(runner: Runner, ns: string, trace: DecisionTrace): Promise<boolean> {
+  const made = await edgesAt(runner, ns, { from_label: L_ENTITY, to_label: L_TRACE, type: R_MADE_DECISION }, "to_in", [
+    trace.id,
+  ]);
+  const actors = made.map((e) => e.from_id).sort();
+  if (!deepEqual(actors, trace.actor_entity === null ? [] : [trace.actor_entity])) return false;
+  const named = trace.alternative_entities.map((alt) => `${R_CONSIDERED}\u0000${alt}`);
+  if (trace.outcome_entity !== null) named.push(`${R_RESULTED_IN}\u0000${trace.outcome_entity}`);
+  const out = await edgesAt(runner, ns, { from_label: L_TRACE, to_label: L_ENTITY }, "from_in", [trace.id]);
+  if (!deepEqual(out.map((e) => `${e.type}\u0000${e.to_id}`).sort(), named.sort())) return false;
+  const sids = trace.steps.map((step) => ids.stepId(trace.id, step.order));
+  const ends = sids.length
+    ? await edgesAt(runner, ns, { from_label: L_STEP, to_label: L_ENTITY }, "from_in", sids)
+    : [];
+  const expected = trace.steps.flatMap((step, k) => [
+    `${R_FROM}\u0000${sids[k]}\u0000${step.from_entity}`,
+    `${R_TO}\u0000${sids[k]}\u0000${step.to_entity}`,
+  ]);
+  return deepEqual(ends.map((e) => `${e.type}\u0000${e.from_id}\u0000${e.to_id}`).sort(), expected.sort());
+}
+
+/**
  * Insert-semantics upsert of a decision trace and its structure; an unchanged trace is a no-op.
  *
  * @param runner (Runner): the graph runner.
@@ -3444,7 +3795,8 @@ export async function upsertTrace(runner: Runner, ns: string, given: UpsertTrace
     deepEqual(
       existing.steps.map((s) => s.relation_id),
       steps.map((s) => s.relation_id),
-    )
+    ) &&
+    (await traceLinksIntact(runner, ns, existing))
   ) {
     return existing;
   }
@@ -3462,7 +3814,7 @@ export async function upsertTrace(runner: Runner, ns: string, given: UpsertTrace
     created_at: existing !== null ? existing.created_at : args.created_at,
     updated_at: args.created_at,
   });
-  precheckWrite(runner, props);
+  precheckNodes(runner, ns, L_TRACE, [[tid, props]]);
   if (existing !== null) await clearTraceStructure(runner, ns, tid);
   await runner.upsertNode(ns, L_TRACE, tid, props);
   await writeTraceStructure(runner, ns, {

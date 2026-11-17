@@ -223,6 +223,18 @@ await graph.insert.facts({
 decisions that carry none. Time arguments take a datetime or ISO 8601 text. No
 offset means UTC.
 
+Both SDKs read one ISO 8601 grammar on every Python version: `YYYY-MM-DD`,
+optionally followed by `T`, `t`, or a space and `HH`, `HH:MM`, or `HH:MM:SS` with
+a fraction after `.` or `,`, then `Z` or an offset such as `+05`, `+0530`, or
+`+05:30` below 24 hours. Basic forms such as `20210304`, week dates such as
+`2021-W09-4`, and ordinal dates are rejected.
+
+The `event_time` of each relation, preference, and decision in the facts is read
+the same way. A bare year such as `"2021"`, a number, or a boolean is rejected,
+not read as Unix seconds. A preference `strength` and an evidence `confidence`
+must be numbers; text such as `"0.9"` and booleans are rejected. Both SDKs, the
+CLI `insert facts`, and the MCP `insert_facts` tool give the same errors.
+
 A [schema](schema.md), passed to the graph or to one insert, guides extraction
 and checks what you write.
 
@@ -237,6 +249,9 @@ Properties and metadata hold JSON values.
   exponent-written value such as `1e16` is rejected there, while Python accepts
   it as a float. JavaScript has a single number type, so the two SDKs cannot
   agree on every exponent-written value.
+- A whole-number float within that range, such as `2.0`, is stored and read
+  back as the integer `2`, since TypeScript cannot tell the two apart. `-0.0`
+  and every other float stay floats.
 - A `datetime` (`Date` in TypeScript) is rejected. Store ISO 8601 text.
 - A `None` (`null`) value removes that key from a stored entity, relation, or
   preference. It is never stored on a new one.

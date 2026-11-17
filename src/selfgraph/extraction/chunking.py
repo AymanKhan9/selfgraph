@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from .._ops import _require_int
 from ..errors import ValidationError, error_reason
@@ -48,7 +49,35 @@ def count_tokens(text: str) -> int:
     enc = _encoder()
     if enc is None:
         return max(1, len(text) // 4)
-    return len(enc.encode(text))
+    return len(_encode(enc, text))
+
+
+def _encode(enc: Any, text: str) -> list[int]:
+    """Encode text as ordinary text, so a special token such as <|endoftext|> in it is tokenized and not rejected.
+
+    @param enc (Any): the tiktoken encoder.
+    @param text (str): the text to encode.
+    @return (list[int]): the tokens.
+    """
+    return enc.encode(text, disallowed_special=())
+
+
+def _char_bounds(enc: Any, tokens: list[int], text: str) -> list[int]:
+    """Map each token boundary to a character offset in text, moving a boundary inside a character to its start.
+
+    @param enc (Any): the tiktoken encoder.
+    @param tokens (list[int]): the tokens of text.
+    @param text (str): the encoded text.
+    @return (list[int]): len(tokens) + 1 character offsets, the first 0 and the last len(text).
+    """
+    pieces = enc.decode_tokens_bytes(tokens)
+    bounds = [0]
+    chars = 0
+    for piece, after in zip(pieces, pieces[1:], strict=False):
+        chars += sum(1 for byte in piece if byte & 0xC0 != 0x80)
+        bounds.append(chars - 1 if after and after[0] & 0xC0 == 0x80 else chars)
+    bounds.append(len(text))
+    return bounds
 
 
 @dataclass(frozen=True)
@@ -94,17 +123,18 @@ def chunk_text(text: str, *, max_tokens: int = 512, overlap_tokens: int | None =
     if enc is None:
         return _chunk_by_chars(text, size=max_tokens * 4, overlap=overlap_tokens * 4)
 
-    tokens = enc.encode(text)
+    tokens = _encode(enc, text)
+    bounds = _char_bounds(enc, tokens, text)
     step = max_tokens - overlap_tokens
     chunks: list[Chunk] = []
     index = 0
     i = 0
     n = len(tokens)
     while i < n:
-        piece = enc.decode(tokens[i : i + max_tokens])
-        start = len(enc.decode(tokens[:i]))
+        start, end = bounds[i], bounds[min(i + max_tokens, n)]
+        piece = text[start:end]
         if piece.strip():
-            chunks.append(Chunk(index=index, text=piece, start_offset=start, end_offset=start + len(piece)))
+            chunks.append(Chunk(index=index, text=piece, start_offset=start, end_offset=end))
             index += 1
         if i + max_tokens >= n:
             break

@@ -207,7 +207,9 @@ A merge record holds:
 - each rewritten relation, preference, and decision, in its original and
   rewritten form.
 
-Inserting the same merge again updates the one record.
+Inserting the same merge again updates the one record. A repeat's aliases,
+external ids, and properties fold into the absorbed input as an upsert of the
+absorbed id would fold them, so unmerging restores them too.
 
 `unmerge` does the following:
 
@@ -218,7 +220,8 @@ Inserting the same merge again updates the one record.
 - Moves each rewritten object back between its original endpoints, with the
   current properties, event time, and evidence, and deletes the redirected one.
   An object that existed before the merge stays, and the original is added beside
-  it. Decision steps follow moved relations. A moved relation that a
+  it. Decision steps follow moved relations. A moved decision keeps a step list
+  edited after the merge instead of replaying its original steps. A moved relation that a
   [replaced source](inserting.md#replacing-a-source) retired is written back
   retired, so an unmerge never brings back a withdrawn fact. One a contradiction
   retired comes back current, since the conflict came from the merged identity.

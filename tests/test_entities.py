@@ -1,7 +1,7 @@
 import re
 
 import pytest
-from helpers import create_entities, fresh_graph, new_graph, run, utc
+from helpers import HYDRADB, create_entities, fresh_graph, new_graph, run, utc
 
 from selfgraph import ConflictError, NotFoundError, ValidationError, entity_id
 from selfgraph.resources._common import encode_cursor
@@ -320,3 +320,25 @@ def test_names_that_differ_only_in_vowel_signs_stay_separate():
     found = run(g.retrieve("रीमा कहाँ रहती है?"))
     assert [e.id for e in found.seeds] == [reema]
     assert "Mumbai" in found.context and "राम" not in found.context
+
+
+def test_entity_and_relation_documents_over_32_kb_round_trip():
+    g = fresh_graph("big")
+    blob = "x" * 40_000
+    run(g.entities.create("Huge", "Thing", properties={"blob": blob}))
+    run(g.entities.create("Other", "Thing"))
+    rel = run(g.relations.create("thing:huge", "LINKS", "thing:other", properties={"blob": blob}))
+    assert run(g.entities.get("thing:huge")).properties["blob"] == blob
+    assert run(g.relations.get(rel.id)).properties["blob"] == blob
+
+
+@pytest.mark.skipif(not HYDRADB, reason="the Bolt message limit is HydraDB's")
+def test_an_insert_larger_than_one_hydradb_message_writes_every_entity():
+    g = fresh_graph("split")
+    blob = "x" * 700_000
+    facts = {"entities": [{"type": "Doc", "name": f"Doc {i}", "properties": {"blob": blob}} for i in range(2)]}
+    run(g.insert.facts(facts))
+    assert [(e.name, len(e.properties["blob"])) for e in run(g.entities.list()).items] == [
+        ("Doc 0", 700_000),
+        ("Doc 1", 700_000),
+    ]

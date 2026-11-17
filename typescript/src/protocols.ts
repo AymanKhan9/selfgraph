@@ -143,11 +143,22 @@ export interface GraphPrimitives {
   childNodes(ns: string, parentLabel: string, parentId: string, edgeType: string, childLabel: string): Promise<Props[]>;
   deleteEdgesTouchingByType(ns: string, label: string, id: string, type: string): Promise<void>;
   /**
-   * Reject an encoded write that exceeds a store size limit, before any prior state is mutated.
+   * Reject node upserts that exceed a store size limit, before any prior state is mutated.
    *
-   * @param props (Props): the encoded properties to write.
+   * @param ns (string): the namespace.
+   * @param label (string): the node label.
+   * @param rows (readonly NodeRow[]): the rows, as upsertNodes takes them.
    */
-  checkDocSize?(props: Props): void;
+  checkNodeWrites?(ns: string, label: string, rows: readonly NodeRow[]): void;
+  /**
+   * Reject edge writes that exceed a store size limit, before any prior state is mutated.
+   *
+   * @param ns (string): the namespace.
+   * @param fromLabel (string): the source node label.
+   * @param toLabel (string): the destination node label.
+   * @param rows (readonly EdgeWrite[]): the rows, as createEdges takes them.
+   */
+  checkEdgeWrites?(ns: string, fromLabel: string, toLabel: string, rows: readonly EdgeWrite[]): void;
   /**
    * Read the entities sharing a match key with some keys from a key index, for a store that keeps one.
    *

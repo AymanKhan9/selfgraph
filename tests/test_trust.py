@@ -159,7 +159,7 @@ def test_retrieve_lists_hubs_marks_lines_through_them_and_can_skip_them():
     )
     result = run(g.retrieve("Ada", k=1, depth=2))
     assert result.hubs == ["thing:hub"]
-    assert "Hub -[HAS]-> Ada (via hub)" in result.context.splitlines()
+    assert "GRAPH (via hub) | Hub -[HAS]-> Ada" in result.context.splitlines()
     assert "thing:bo" in {e.id for e in result.subgraph.entities}
     skipped = run(g.retrieve("Ada", k=1, depth=2, skip_hubs=True))
     assert {e.id for e in skipped.subgraph.entities} == {"thing:ada", "thing:hub"}
@@ -177,7 +177,7 @@ def test_certified_relations_survive_supersede_and_lead_retrieval():
     result = run(g.insert.facts({"relations": [works_at("globex", 2025)]}))
     assert [w.code for w in result.warnings] == ["certified_kept"]
     assert run(g.relations.get(old.id)).is_current
-    assert "Ann -[WORKS_AT]-> Acme [certified]" in run(g.retrieve("Ann")).context
+    assert "GRAPH [certified] | Ann -[WORKS_AT]-> Acme" in run(g.retrieve("Ann")).context
     assert run(g.relations.uncertify(old.id)).certified_at is None
     run(g.relations.certify(old.id, by="hr"))
     bumped = run(g.relations.update(old.id, set_properties={"role": "cto"}))
@@ -222,6 +222,26 @@ def test_replace_source_retires_what_only_older_versions_stated():
     assert "ann -[WORKS_AT]-> acme" in then.context and "ann WORKS_AT acme" in then.context
     again = run(g.insert.text("ann KNOWS bob\nann READS news", source_id="hr", replace_source=True))
     assert again.source_diff.retired == [] and again.source_diff.kept == sorted([knows, reads])
+    readded = run(
+        g.insert.text("ann WORKS_AT acme\nann KNOWS bob", source_id="hr", event_time=utc(2026), replace_source=True)
+    )
+    assert readded.source_diff.model_dump() == {"kept": [knows], "added": [works], "retired": [reads]}
+    manual = run(
+        g.relations.create("thing:ann", "READS", "thing:news", evidence=[{"source_id": "hr", "quote": "hand"}])
+    )
+    with_manual = run(
+        g.insert.text(
+            "ann WORKS_AT acme\nann KNOWS bob\nann READS news",
+            source_id="hr",
+            event_time=utc(2027),
+            replace_source=True,
+        )
+    )
+    assert with_manual.source_diff.model_dump() == {
+        "kept": sorted([knows, manual.id, works]),
+        "added": [],
+        "retired": [],
+    }
 
 
 def test_replace_source_keeps_certified_facts_and_needs_a_source_id():
@@ -231,6 +251,8 @@ def test_replace_source_keeps_certified_facts_and_needs_a_source_id():
     result = run(g.insert.text("ann KNOWS bob", source_id="hr", replace_source=True))
     assert result.source_diff.retired == [] and [w.code for w in result.warnings] == ["certified_kept"]
     assert run(g.relations.get(rel.id)).is_current
+    later = run(g.insert.text("ann KNOWS bob\nann READS news", source_id="hr", replace_source=True))
+    assert [w.code for w in later.warnings] == []
     assert run(g.insert.text("ann KNOWS bob", source_id="hr")).source_diff is None
     with pytest.raises(ValidationError, match="replace_source needs a source_id"):
         run(g.insert.text("ann KNOWS bob", replace_source=True))
@@ -393,6 +415,15 @@ def test_llm_contradiction_keeps_a_certified_rival():
     res = run(g.insert.facts({"relations": [works_at("globex", 2022)]}))
     assert [w.code for w in res.warnings] == ["certified_kept"]
     assert run(g.relations.get(acme.id)).is_current
+
+
+def test_a_delete_leaves_what_the_llm_judge_retired_retired():
+    g = fresh_graph("llm-delete", llm=Judge(), extraction="regex", contradiction="llm")
+    acme = run(g.insert.facts({"entities": ANN_ACME_GLOBEX, "relations": [works_at("acme", 2020)]})).relations[0]
+    globex = run(g.insert.facts({"relations": [works_at("globex", 2022)]})).relations[0]
+    assert run(g.relations.versions(acme.id))[0].invalidated_by == globex.id
+    assert run(g.relations.delete(globex.id)).restored_relations == 0
+    assert not run(g.relations.versions(acme.id))[0].is_current
 
 
 def test_a_write_that_changes_a_certified_relation_warns_it_dropped_the_mark():

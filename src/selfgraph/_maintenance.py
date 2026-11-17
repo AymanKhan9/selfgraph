@@ -132,8 +132,8 @@ async def write_entity_relevance(runner: Any, ns: str, scores: dict[str, float],
         e = decode_entity(props)
         fields = e.model_dump(exclude={"relevance", "relevance_at"})
         encoded = encode_entity_props(ns=ns, **fields, relevance=scores[eid], relevance_at=at)
-        await _ops._precheck_write(runner, encoded)
         by_type.setdefault(e.type, []).append((eid, encoded))
+    await _ops._precheck_nodes(runner, ns, L_ENTITY, [row for rows in by_type.values() for row in rows])
     for etype, rows in by_type.items():
         await runner.upsert_nodes(ns, L_ENTITY, rows, extra_label=etype)
     return sum(len(rows) for rows in by_type.values())
@@ -160,8 +160,7 @@ async def write_relation_relevance(
         for rid, edge in found.items()
         if edge["props"]["is_current"]
     ]
-    for *_, props in rows:
-        await _ops._precheck_write(runner, props)
+    await _ops._precheck_edges(runner, ns, L_ENTITY, L_ENTITY, rows)
     if rows:
         await runner.create_edges(ns, L_ENTITY, L_ENTITY, rows)
     return len(rows)
@@ -192,7 +191,7 @@ def fold_properties(survivor: Relation, duplicates: list[Relation]) -> tuple[dic
         for key, value in rel.properties.items():
             if key not in merged:
                 merged[key] = value
-            elif merged[key] != value:
+            elif not _ops._json_equal(merged[key], value):
                 conflicts.setdefault(rel.id, []).append(key)
     return merged, {rid: sorted(keys) for rid, keys in conflicts.items()}
 
@@ -236,12 +235,16 @@ async def merge_relations(runner: Any, ns: str, survivor: str, duplicates: list[
         event_time=None if same_time else first,
         evidence=evidence,
     )
+    gone = [
+        {"props": {"id": rel.id}, "type": rel.type, "from_id": rel.from_entity, "to_id": rel.to_entity} for rel in found
+    ]
     found = [rel.id for rel in found]
     tids = await _ops._traces_touching_relations(runner, ns, found)
     await _ops._repoint_steps(runner, ns, tids, dict.fromkeys(found, survivor))
     for rid in found:
         counts["deleted_relation_versions"] += await runner.delete_edges(ns, rid)
         await _ops._delete_evidence(runner, ns, rid)
+    await _ops.repoint_retired(runner, ns, gone, survivor)
     return counts
 
 

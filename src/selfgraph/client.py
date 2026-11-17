@@ -9,6 +9,7 @@ from functools import partial
 from typing import Any
 
 from . import _ops, tiers
+from ._diff import graph_diff
 from ._export import obsidian_vault
 from ._maintenance import inspect, scan_entities, scan_relations
 from ._serde import L_TRACE, aware, now
@@ -27,6 +28,7 @@ from .models import (
     Extraction,
     ExtractionInstructions,
     ExtractionPrompts,
+    GraphDiff,
     InsertResult,
     InsertWarning,
     JsonValue,
@@ -47,6 +49,7 @@ from .resolution import (
     plan_resolution,
     require_resolver,
     save_merges,
+    trim_resolution,
 )
 from .resources import Decisions, Entities, Maintenance, Preferences, Relations
 from .retrieval import check_answerable as _check_answerable
@@ -421,6 +424,23 @@ class SelfGraph:
             report.note = _LEXICAL_NOTE
         return report
 
+    async def diff(self, since: datetime | str, until: datetime | str | None = None) -> GraphDiff:
+        """List stored changes in the known-time window (since, until], defaulting until to now.
+
+        @param since (datetime | str): exclusive lower bound, naive times read as UTC.
+        @param until (datetime | str | None): inclusive upper bound, or now.
+        @return (GraphDiff): additions, retirements, revisions, and entities created.
+        """
+        start = _ops.parse_time(since, "since")
+        end = _ops.parse_time(until, "until")
+        if start is None:
+            raise ValidationError("since is required")
+        start = aware(start)
+        end = now() if end is None else aware(end)
+        if end < start:
+            raise ValidationError("until must be at or after since")
+        return await graph_diff(await self._reader(), self.namespace, start, end)
+
     async def readiness(self) -> Readiness:
         """Report whether the graph can answer: the store is reachable and the namespace holds entities, with counts
         and lint (orphan entities, relations without evidence, decisions with a retired step, off-schema types).
@@ -506,6 +526,9 @@ class SelfGraph:
         """
         mode = self._contradiction if contradiction is None else self._contradiction_tier(contradiction)
         return mode, contradiction_caps(schema)
+
+    def _caps(self) -> dict[str, Any]:
+        return contradiction_caps(self._schema)
 
     async def _create_relation(self, contradiction: ContradictionMode | None, **fields: Any) -> Any:
         """Create one relation under the contradiction mode, logging contradiction warnings like schema warnings.
@@ -601,18 +624,21 @@ class SelfGraph:
         async def _apply(tx: Any) -> InsertResult:
             _ops._require_datetime("event_time", default_event_time)
             canonical = await _ops.validate_facts(tx, ns, facts, rewrite=lambda o: canonicalize_types(o, active_schema))
-            dropped: list[InsertWarning] = []
-            if extracted and mode == "strict":
-                canonical, dropped = await drop_off_schema(tx, ns, canonical, active_schema)
-            max_count = mode == "strict" and conflicts != "off"
-            checked = await enforce_schema(tx, ns, canonical, active_schema, mode, max_count=max_count)
-            found: list[InsertWarning] = []
             resolution = None
             if active_resolver is not None:
                 resolution = await plan_resolution(tx, ns, canonical, active_resolver, active_schema, created_at)
             resolved = resolution.facts if resolution is not None else canonical
+            dropped: list[InsertWarning] = []
+            if extracted and mode == "strict":
+                resolved, dropped = await drop_off_schema(tx, ns, resolved, active_schema)
+                if resolution is not None and dropped:
+                    resolution = trim_resolution(resolution, resolved)
+            max_count = mode == "strict" and conflicts != "off"
+            checked = await enforce_schema(tx, ns, resolved, active_schema, mode, max_count=max_count, upsert=True)
+            found: list[InsertWarning] = []
             if mode == "strict" and conflicts == "warn":
-                await _ops.require_max_count(tx, ns, caps, resolved.relations)
+                await _ops.require_max_count(tx, ns, caps, resolved.relations, default_event_time, created_at)
+            await _ops.require_relation_identities(tx, ns, resolved.relations)
             source_version: str | None = None
             base_evidence = []
             prior = await _ops.source_targets(tx, ns, source_id) if replace_source and source_id else set()
@@ -656,8 +682,7 @@ class SelfGraph:
                 warnings=found,
             )
             if judged and self._llm is not None:
-                fresh = [r for r in relations if r.created_at == created_at]
-                found.extend(await judge_contradictions(tx, ns, self._llm, fresh, caps, created_at))
+                found.extend(await judge_contradictions(tx, ns, self._llm, relations, caps, created_at))
 
             diff = None
             if replace_source and source_id is not None and source_version is not None:

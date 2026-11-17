@@ -1,9 +1,11 @@
 import { contradictionTier, GraphAccess, seedTier } from "./access.js";
+import { graphDiff } from "./diff.js";
 import { LLM_HINT, StoreError, ValidationError } from "./errors.js";
 import { obsidianVault } from "./export.js";
 import { checkPrompts } from "./extraction/prompts.js";
 import { Insert } from "./insert.js";
 import { pyStrip } from "./internal/py.js";
+import { epochMicros } from "./internal/time.js";
 import { type LLMArg, resolveLlm } from "./llm/index.js";
 import { inspect, scanEntities, scanRelations } from "./maintenance.js";
 import {
@@ -13,6 +15,7 @@ import {
   type DateTimeInput,
   ExtractionInstructions,
   ExtractionPrompts,
+  type GraphDiff,
   type JsonValue,
   type LintIssue,
   type Readiness,
@@ -45,6 +48,7 @@ import { clamp, type ExtractionTier, type Level, PRESETS, requireLevel, requireT
 import {
   checkOptions,
   keysOf,
+  parseTime,
   requireInt,
   requireJsonMapping,
   requireList,
@@ -251,6 +255,21 @@ export class SelfGraph {
     if (!pyStrip(query)) throw new ValidationError("query cannot be empty");
     requireJsonMapping("params", params, false);
     return this.graph.read((store) => store.runCypher(query, params));
+  }
+
+  /**
+   * List stored changes in the known-time window (since, until]. Deletes and merges are not visible.
+   *
+   * @param since (DateTimeInput): exclusive lower bound, with no offset read as UTC.
+   * @param until (DateTimeInput | null): inclusive upper bound, or now.
+   * @return (GraphDiff): stored creations, revisions, retirements, and limitations.
+   */
+  async diff(since: DateTimeInput, until?: DateTimeInput | null): Promise<GraphDiff> {
+    const start = parseTime(since, "since");
+    const end = parseTime(until, "until") ?? new Date();
+    if (start === null) throw new ValidationError("since is required");
+    if (epochMicros(end) < epochMicros(start)) throw new ValidationError("until must be at or after since");
+    return this.graph.read((runner, ns) => graphDiff(runner, ns, start, end));
   }
 
   /**

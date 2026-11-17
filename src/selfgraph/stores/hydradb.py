@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -11,7 +12,7 @@ from typing import Any
 from .._ops import _batches
 from .._serde import L_ENTITY, L_EVIDENCE, L_MERGE, decode_entity
 from ..errors import OTHER_ENGINE_HINT, TOKEN_HINT, StoreError
-from ..ids import quote_label
+from ..ids import quote_label, require_identifier
 from ..models import CypherResult
 from ..resolution import match_keys
 from ._cypher import (
@@ -34,7 +35,8 @@ _SEEK_BATCH = 256
 _PARALLEL = 32
 _QUEUING: ContextVar[HydraDBStore | None] = ContextVar("selfgraph_hydradb_queuing", default=None)
 _SCALARS = (str, int, float, bool)
-_MAX_STRING_BYTES = 32000
+_MAX_MESSAGE_BYTES = 2 * 1024 * 1024
+_MAX_WRITE_BYTES = _MAX_MESSAGE_BYTES - 64 * 1024
 _WRITE_BATCH = 1000
 _DELETE_BATCH = 1024
 _TRANSIENT_MARKERS = ("snapshot", "epoch", "transient", "serializ", "conflict", "lock")
@@ -42,33 +44,34 @@ _PROTOCOL_MARKERS = ("protocol version", "unsupported protocol")
 _OTHER_ENGINE_MARKERS = (*_PROTOCOL_MARKERS, "neo.clienterror.database.databasenotfound", "memgraph")
 _OTHER_ENGINE_HINT = f"; if this is Neo4j or Memgraph, {OTHER_ENGINE_HINT}"
 _NO_TOKEN = f"HydraDB needs a token: {TOKEN_HINT}"
+_LABEL_KEY = re.compile(r"[A-Za-z0-9_.-]+")
 
 
 def _transient(lowered: str) -> bool:
     return any(k in lowered for k in _TRANSIENT_MARKERS)
 
 
-def _guard_sizes(row: Mapping[str, Any]) -> None:
-    """Reject a write whose stored strings exceed the engine's per-string size limit.
+def _write_size(row: Mapping[str, Any]) -> int:
+    """The bytes a row adds to a HydraDB write: its column names, its strings, and 9 for each other value.
 
     @param row (Mapping[str, Any]): the column names and values about to be written.
-    @return (None): nothing; raises when a stored string is too large.
+    @return (int): the size in bytes.
     """
-    for key, value in row.items():
-        if not isinstance(value, str):
-            continue
-        size = len(value.encode("utf-8"))
-        if size > _MAX_STRING_BYTES:
-            field = (
-                "the serialized node or edge document (HydraDB stores each node or edge as one JSON document, "
-                "so its properties share this budget)"
-                if key == "doc"
-                else f"the string column {key!r}"
-            )
-            raise StoreError(
-                f"HydraDB rejects {field} at {size} bytes; the engine limit is "
-                f"{_MAX_STRING_BYTES} bytes per stored string"
-            )
+    return sum(len(key.encode()) + (len(value.encode()) if isinstance(value, str) else 9) for key, value in row.items())
+
+
+def _guard_sizes(row: Mapping[str, Any]) -> None:
+    """Reject a write that would not fit in one HydraDB Bolt message.
+
+    @param row (Mapping[str, Any]): the column names and values about to be written.
+    @return (None): nothing; raises when the write is too large.
+    """
+    size = _write_size(row)
+    if size > _MAX_WRITE_BYTES:
+        raise StoreError(
+            f"HydraDB rejects this write at {size} bytes; a node or edge row goes in one Bolt message, which HydraDB "
+            f"caps at {_MAX_MESSAGE_BYTES} bytes, so a row may take at most {_MAX_WRITE_BYTES}"
+        )
 
 
 def _sk(ns: str, sid: str) -> int:
@@ -110,7 +113,7 @@ def _unset(props: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _removes(alias: str, keys: tuple[str, ...]) -> str:
-    return ", ".join(f"{alias}.`{k}`" for k in keys)
+    return ", ".join(f"{alias}.`{require_identifier(k)}`" for k in keys)
 
 
 def _doc(props: Mapping[str, Any]) -> str:
@@ -125,7 +128,7 @@ def _same(alias: str, key: str, param: str) -> str:
     @param param (str): the parameter name.
     @return (str): the predicate.
     """
-    return f"NOT {alias}.`{key}` <> ${param}"
+    return f"NOT {alias}.`{require_identifier(key)}` <> ${param}"
 
 
 _BY_SID = f"MATCH ()-[r:{_EDGE} {{sid: $sid}}]->() WHERE {_same('r', 'ns', 'ns')}"
@@ -142,25 +145,90 @@ def _keyed(alias: str, label: str, equals: dict | None, params: dict) -> str:
     """
     entries = []
     for i, (key, value) in enumerate(sorted((equals or {}).items())):
-        entries.append(f"`{key}`: $eq{i}")
+        entries.append(f"`{require_identifier(key)}`: $eq{i}")
         params[f"eq{i}"] = value
     return f"{alias}:{label} {{{', '.join(entries)}}}" if entries else f"{alias}:{label}"
+
+
+def _node_write_row(ns: str, label: str, id: str, props: dict) -> dict:
+    """The row a node upsert writes.
+
+    @param ns (str): namespace.
+    @param label (str): the node label.
+    @param id (str): the node id.
+    @param props (dict): the encoded node properties.
+    @return (dict): the row, with its surrogate id, sort key, document, and scalar columns.
+    """
+    return {
+        "id": _sk(ns, id),
+        "sid": id,
+        "ns": ns,
+        "label": label,
+        _sort_key(ns, label): id,
+        "doc": _doc(props),
+        **_scalars(props),
+    }
+
+
+def _edge_write_row(ns: str, type: str, from_label: str, from_id: str, to_label: str, to_id: str, props: dict) -> dict:
+    """The row an edge write creates.
+
+    @param ns (str): namespace.
+    @param type (str): the edge type.
+    @param from_label (str): the source node label.
+    @param from_id (str): the source node id.
+    @param to_label (str): the destination node label.
+    @param to_id (str): the destination node id.
+    @param props (dict): the encoded edge properties.
+    @return (dict): the row, with its endpoints, surrogate id, document, and scalar columns.
+    """
+    sid = props.get("id")
+    row: dict[str, Any] = {
+        "f": _sk(ns, from_id),
+        "t": _sk(ns, to_id),
+        "fa": from_id,
+        "tb": to_id,
+        "fl": from_label,
+        "tl": to_label,
+        "id": _sk(ns, f"{from_id}|{type}|{to_id}|{sid}|{props.get('revision')}"),
+        "ns": ns,
+        "etype": type,
+        "doc": _doc(props),
+    }
+    if sid is not None:
+        row["sid"] = sid
+    row.update(_scalars(props))
+    return row
 
 
 def _by_columns(rows: list[dict]) -> list[list[dict]]:
     """Group write rows by column set into batches, since an UNWIND write needs every row to carry the same fields.
 
     @param rows (list[dict]): the rows to group.
-    @return (list[list[dict]]): batches of at most _WRITE_BATCH rows sharing one column set, in first-seen order.
+    @return (list[list[dict]]): batches sharing one column set, each at most _WRITE_BATCH rows and _MAX_WRITE_BYTES
+        bytes, in first-seen order.
     """
     groups: dict[tuple[str, ...], list[dict]] = {}
     for row in rows:
         groups.setdefault(tuple(sorted(row)), []).append(row)
-    return [group[i : i + _WRITE_BATCH] for group in groups.values() for i in range(0, len(group), _WRITE_BATCH)]
+    out: list[list[dict]] = []
+    for group in groups.values():
+        batch: list[dict] = []
+        size = 0
+        for row in group:
+            row_size = _write_size(row)
+            if batch and (len(batch) == _WRITE_BATCH or size + row_size > _MAX_WRITE_BYTES):
+                out.append(batch)
+                batch, size = [], 0
+            batch.append(row)
+            size += row_size
+        out.append(batch)
+    return out
 
 
 def _sets(alias: str, row: dict, skip: tuple[str, ...]) -> str:
-    return ", ".join(f"{alias}.`{k}` = row.`{k}`" for k in sorted(row) if k not in skip)
+    cols = (require_identifier(k) for k in sorted(row) if k not in skip)
+    return ", ".join(f"{alias}.`{c}` = row.`{c}`" for c in cols)
 
 
 def _keys_of(props: Mapping[str, Any]) -> frozenset[str]:
@@ -204,6 +272,15 @@ def _label_key(label: str) -> int:
     @return (int): the key.
     """
     return _sk("", f"\x00label\x00{label}")
+
+
+def _engine_label(label: str | None) -> str | None:
+    """The label as HydraDB can store it, or None when the engine rejects it as a label key.
+
+    @param label (str | None): the label to add or remove, such as an entity type.
+    @return (str | None): the label, or None when it is missing or not a valid HydraDB label key.
+    """
+    return label if label is not None and _LABEL_KEY.fullmatch(label) else None
 
 
 class HydraDBStore(AutoCommitStore):
@@ -387,13 +464,31 @@ class HydraDBStore(AutoCommitStore):
         res = await self._run(f"MATCH (n:{label} {{id: $iid}}) RETURN n.sid AS sid", {"iid": iid}, reads=[iid])
         return bool(res.rows)
 
-    def check_doc_size(self, props: Mapping[str, Any]) -> None:
-        """Reject an encoded write whose serialized document exceeds the engine's per-string limit, before any write.
+    def check_node_writes(self, ns: str, label: str, rows: list[tuple[str, dict]]) -> None:
+        """Reject node upserts that would not fit in one HydraDB Bolt message, before any write.
 
-        @param props (Mapping[str, Any]): the encoded node or edge properties about to be written.
-        @return (None): nothing; raises StoreError when the document is too large.
+        @param ns (str): namespace.
+        @param label (str): the node label.
+        @param rows (list[tuple[str, dict]]): (id, encoded properties) pairs, as upsert_nodes takes them.
+        @return (None): nothing; raises StoreError when a row is too large.
         """
-        _guard_sizes({"doc": _doc(props), **_scalars(dict(props))})
+        for id, props in rows:
+            _guard_sizes(_node_write_row(ns, label, id, props))
+
+    def check_edge_writes(
+        self, ns: str, from_label: str, to_label: str, rows: list[tuple[str, str, str, dict]]
+    ) -> None:
+        """Reject edge writes that would not fit in one HydraDB Bolt message, before any write.
+
+        @param ns (str): namespace.
+        @param from_label (str): the source node label.
+        @param to_label (str): the destination node label.
+        @param rows (list[tuple[str, str, str, dict]]): (type, from id, to id, encoded properties), as create_edges
+            takes them.
+        @return (None): nothing; raises StoreError when a row is too large.
+        """
+        for type, from_id, to_id, props in rows:
+            _guard_sizes(_edge_write_row(ns, type, from_label, from_id, to_label, to_id, props))
 
     async def upsert_node(self, ns: str, label: str, id: str, props: dict, *, extra_label: str | None = None) -> None:
         await self.upsert_nodes(ns, label, [(id, props)], extra_label=extra_label)
@@ -405,17 +500,10 @@ class HydraDBStore(AutoCommitStore):
             quote_label(extra_label)
         out = []
         cleared: dict[tuple[str, ...], list[int]] = {}
-        key = _sort_key(ns, label)
         for id, props in rows:
-            row = {
-                "id": _sk(ns, id),
-                "sid": id,
-                "ns": ns,
-                "label": label,
-                key: id,
-                "doc": _doc(props),
-                **_scalars(props),
-            }
+            for prop_key in props:
+                require_identifier(prop_key)
+            row = _node_write_row(ns, label, id, props)
             _guard_sizes(row)
             out.append(row)
             if keys := _unset(props):
@@ -424,9 +512,9 @@ class HydraDBStore(AutoCommitStore):
         for keys, iids in cleared.items():
             for batch in _batches(iids, _DELETE_BATCH):
                 params = {"iids": batch}
+                have = " OR ".join(f"n.`{require_identifier(k)}` IS NOT NULL" for k in keys)
                 found = await self._run(
-                    f"MATCH (n:{label}) WHERE n.id IN $iids AND ({' OR '.join(f'n.`{k}` IS NOT NULL' for k in keys)}) "
-                    "RETURN n.sid AS sid",
+                    f"MATCH (n:{label}) WHERE n.id IN $iids AND ({have}) RETURN n.sid AS sid",
                     params,
                     reads=batch,
                 )
@@ -435,30 +523,47 @@ class HydraDBStore(AutoCommitStore):
                     held.append((keys, params))
         index_rows = _key_rows(ns, rows) if label == L_ENTITY else []
         await self._merge_rows(_KEY, index_rows)
-        await self._merge_rows(label, out, [r["id"] for r in index_rows])
+        await self._merge_rows(label, out, [r["id"] for r in index_rows], extra_label=extra_label)
         for keys, params in held:
             await self._run(f"MATCH (n:{label}) WHERE n.id IN $iids REMOVE {_removes('n', keys)}", params)
 
-    async def _merge_rows(self, label: str, rows: list[dict], needs: list[int] | None = None) -> None:
+    async def _merge_rows(
+        self, label: str, rows: list[dict], needs: list[int] | None = None, *, extra_label: str | None = None
+    ) -> None:
         """Upsert node rows by surrogate id with one UNWIND statement per batch of rows sharing a column set.
 
         @param label (str): the node label.
         @param rows (list[dict]): the rows, each with its surrogate id and the columns to set.
         @param needs (list[int] | None): ids that must be written first, such as the entities' key rows, so a
             failed write never leaves an entity stored without them.
+        @param extra_label (str | None): an additional label to add to every node.
         @return (None): nothing.
         """
+        extra_label = _engine_label(extra_label)
+        marks = [_label_key(label), _label_key(extra_label)] if extra_label is not None else [_label_key(label)]
         for batch in _by_columns(rows):
+            ids = [r["id"] for r in batch]
             await self._write(
                 f"UNWIND $rows AS row MERGE (n {{id: row.id}}) SET n:{label}, {_sets('n', batch[0], ('id',))}",
                 {"rows": batch},
-                [r["id"] for r in batch],
+                ids,
                 needs or (),
-                [_label_key(label)],
+                marks,
                 after_all=label in (L_EVIDENCE, L_MERGE),
             )
+            if extra_label is not None:
+                await self._write(
+                    f"MATCH (n:{label}) WHERE n.id IN $iids SET n:{quote_label(extra_label)}",
+                    {"iids": ids},
+                    ids,
+                    ids,
+                    marks,
+                    after_all=label in (L_EVIDENCE, L_MERGE),
+                )
             if _QUEUING.get() is self:
-                self._pending_nodes.update((label, r["id"]) for r in batch)
+                self._pending_nodes.update((label, i) for i in ids)
+                if extra_label is not None:
+                    self._pending_nodes.update((extra_label, i) for i in ids)
 
     async def entities_matching(self, ns: str, keys: Iterable[str]) -> list[dict]:
         """Read the entities sharing a match key with some keys, through the key index instead of a scan.
@@ -503,10 +608,10 @@ class HydraDBStore(AutoCommitStore):
             await self._run(f"MATCH (k:{_KEY}) WHERE k.eid IN $iids DETACH DELETE k", {"iids": batch})
 
     async def remove_node_label(self, ns: str, label: str, id: str, drop_label: str) -> None:
-        await self._run(
-            f"MATCH (n:{label} {{id: $iid}}) REMOVE n:{quote_label(drop_label)}",
-            {"iid": _sk(ns, id)},
-        )
+        quoted = quote_label(drop_label)
+        if _engine_label(drop_label) is None:
+            return
+        await self._run(f"MATCH (n:{label} {{id: $iid}}) REMOVE n:{quoted}", {"iid": _sk(ns, id)})
 
     async def match_nodes(
         self,
@@ -546,10 +651,10 @@ class HydraDBStore(AutoCommitStore):
             where = [_same("n", "ns", "ns")]
         for i, (key, values) in enumerate(sorted((any_of or {}).items())):
             if key != "id":
-                where.append(f"n.`{key}` IN $in{i}")
+                where.append(f"n.`{require_identifier(key)}` IN $in{i}")
                 params[f"in{i}"] = list(values)
         where_after("n.sid", id_gt, where, params)
-        ob = "sid" if order_by == "id" else order_by
+        ob = "sid" if order_by == "id" else require_identifier(order_by, "order_by")
         res = await self._run(
             f"MATCH ({pattern}) WHERE {' AND '.join(where)} "
             f"RETURN n.doc AS doc, n.`{ob}` AS __ob ORDER BY __ob SKIP $skip LIMIT $limit",
@@ -609,22 +714,9 @@ class HydraDBStore(AutoCommitStore):
     ) -> None:
         out = []
         for type, from_id, to_id, props in rows:
-            sid = props.get("id")
-            row: dict[str, Any] = {
-                "f": _sk(ns, from_id),
-                "t": _sk(ns, to_id),
-                "fa": from_id,
-                "tb": to_id,
-                "fl": from_label,
-                "tl": to_label,
-                "id": _sk(ns, f"{from_id}|{type}|{to_id}|{sid}|{props.get('revision')}"),
-                "ns": ns,
-                "etype": type,
-                "doc": _doc(props),
-            }
-            if sid is not None:
-                row["sid"] = sid
-            row.update(_scalars(props))
+            for key in props:
+                require_identifier(key)
+            row = _edge_write_row(ns, type, from_label, from_id, to_label, to_id, props)
             _guard_sizes(row)
             out.append(row)
         for batch in _by_columns(out):
@@ -680,13 +772,15 @@ class HydraDBStore(AutoCommitStore):
         return out
 
     async def update_current_edge(self, ns: str, id: str, props: dict) -> None:
+        for key in props:
+            require_identifier(key)
         merged = await merged_current_edge(self, ns, id, props)
         if merged is None:
             return
         sets = ["r.doc = $doc"]
         params: dict[str, Any] = {"ns": ns, "sid": id, "doc": _doc(merged)}
         for k, v in _scalars(merged).items():
-            sets.append(f"r.`{k}` = $s_{k}")
+            sets.append(f"r.`{require_identifier(k)}` = $s_{k}")
             params[f"s_{k}"] = v
         _guard_sizes(params)
         await self._run(
@@ -752,16 +846,18 @@ class HydraDBStore(AutoCommitStore):
             apat = ""
             filters["fl"] = from_label
         for i, (key, value) in enumerate(filters.items()):
-            where.append(_same("r", key, f"eq{i}") if anchored else f"r.`{key}` = $eq{i}")
+            where.append(_same("r", key, f"eq{i}") if anchored else f"r.`{require_identifier(key)}` = $eq{i}")
             params[f"eq{i}"] = value
         if current_only:
             where.append("NOT r.is_current <> true" if anchored else "r.is_current = true")
         where_after("r.sid", id_gt, where, params)
-        ob = "sid" if order_by == "id" else order_by
+        ob = "sid" if order_by == "id" else require_identifier(order_by, "order_by")
+        tie_break = ", r.revision AS __rev" if order_by == "id" else ""
+        order = "__ob, __rev" if order_by == "id" else "__ob"
         res = await self._run(
             f"MATCH ({apat})-[r:{_EDGE}]->({bpat}) WHERE {' AND '.join(where)} "
-            f"RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`{ob}` AS __ob "
-            f"ORDER BY __ob SKIP $skip LIMIT $limit",
+            f"RETURN r.doc AS doc, r.fa AS fa, r.tb AS tb, r.etype AS et, r.`{ob}` AS __ob{tie_break} "
+            f"ORDER BY {order} SKIP $skip LIMIT $limit",
             params,
         )
         return [edge_row(r) for r in res.rows]
@@ -776,7 +872,7 @@ class HydraDBStore(AutoCommitStore):
         *,
         order_by: str | None = None,
     ) -> list[dict]:
-        ob = "" if order_by is None else f", c.`{order_by}` AS __ob"
+        ob = "" if order_by is None else f", c.`{require_identifier(order_by, 'order_by')}` AS __ob"
         order = "" if order_by is None else " ORDER BY __ob"
         res = await self._run(
             f"MATCH (p:{parent_label} {{id: $iid}})-[r:{_EDGE}]->(c:{child_label}) "

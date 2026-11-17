@@ -73,10 +73,21 @@ class Relations(Resource):
         limit: int = DEFAULT_PAGE_LIMIT,
         include_invalidated: bool = False,
     ) -> Page[Relation]:
+        """List current relations, optionally filtered by endpoints and type.
+
+        @param from_entity (str | None): filter by source entity.
+        @param type (str | None): filter by relation type; with a schema, an alias matches its type.
+        @param to_entity (str | None): filter by target entity.
+        @param cursor (str | None): the cursor from a previous page, or None to start.
+        @param limit (int): page size.
+        @param include_invalidated (bool): also list relations a contradiction invalidated.
+        @return (Page[Relation]): relations ordered by id.
+        """
+        rtype = canonical_relation_type(type, self._c.schema) if isinstance(type, str) and type.strip() else type
         return await self._page(
             _ops.list_relations,
             from_entity=from_entity,
-            type=type,
+            type=rtype,
             to_entity=to_entity,
             cursor=cursor,
             limit=limit,
@@ -96,7 +107,7 @@ class Relations(Resource):
         """Yield every relation across pages, following the list cursor.
 
         @param from_entity (str | None): filter by source entity.
-        @param type (str | None): filter by relation type.
+        @param type (str | None): filter by relation type; with a schema, an alias matches its type.
         @param to_entity (str | None): filter by target entity.
         @param limit (int): the page size per fetch, not a cap; iteration yields every match.
         @param include_invalidated (bool): also yield relations a contradiction invalidated.
@@ -135,7 +146,7 @@ class Relations(Resource):
         @param remove_properties (Iterable[str]): property keys to drop.
         @param event_time (datetime | str | None): the new valid time.
         @param evidence (Iterable[EvidenceInput] | None): evidence records to add; existing evidence is kept.
-        @return (Relation): the new current version.
+        @return (Relation): the new version, current unless supersede retired it.
         """
         check_options("relations.update", extra, ("set_properties", "remove_properties", "event_time", "evidence"))
         _ops._validate_own_id("relation", id)
@@ -147,6 +158,8 @@ class Relations(Resource):
             event_time=event_time,
             evidence=None if evidence is None else _ops.evidence_from_inputs(evidence),
             schema_check=self._c._schema_check,
+            contradiction="supersede" if self._c._contradiction in ("supersede", "llm") else "off",
+            caps=self._c._caps(),
         )
 
     async def evidence(self, id: str, *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page[Evidence]:
@@ -200,8 +213,11 @@ class Relations(Resource):
     async def delete(self, id: str) -> DeleteResult:
         """Delete a relation, all its versions, and any decision trace that uses it as a step.
 
+        A relation it had retired comes back as current when the schema's max_count leaves room, else it is
+        re-pointed to the relation that displaces it.
+
         @param id (str): the relation id.
-        @return (DeleteResult): counts of relation versions and decisions removed.
+        @return (DeleteResult): counts of relation versions and decisions removed, and relations restored.
         """
         _ops._validate_own_id("relation", id)
-        return DeleteResult(**await self._c._write(_ops.delete_relation, id))
+        return DeleteResult(**await self._c._write(_ops.delete_relation, id, self._c._caps()))

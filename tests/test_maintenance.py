@@ -17,7 +17,7 @@ from helpers import (
     works_at,
 )
 
-from selfgraph import EvidenceInput, SyncSelfGraph, ValidationError
+from selfgraph import EntityType, EvidenceInput, RelationType, Schema, SyncSelfGraph, ValidationError
 from selfgraph._maintenance import relevance_score
 
 T0 = utc(2026)
@@ -166,6 +166,7 @@ def test_prune_dry_run_then_apply_matches_deleting_entities_one_by_one(caplog):
         "deleted_relation_versions": 3,
         "deleted_decisions": 1,
         "deleted_preference_versions": 1,
+        "restored_relations": 0,
     }
     assert _state(batched) == _state(one)
     assert _state(one)[:5] == (["person:keep"], [], ["decision:keep"], ["person:keep"], (None, 2))
@@ -191,6 +192,23 @@ def test_prune_by_relevance_skips_unscored_items_and_filters_by_type():
     assert (by_type.entity_ids, by_type.relation_ids) == (["gadget:z"], [])
     by_rel = run(g.maintenance.prune(older_than=cutoff, relation_types=["gadget"]))
     assert (by_rel.entity_ids, by_rel.relation_ids) == ([], [gadget.id])
+
+
+def test_prune_relation_type_alias_matches_canonical_type():
+    schema = Schema(
+        entities=[EntityType(name="Person"), EntityType(name="Company")],
+        relations=[RelationType(type="WORKS_AT", aliases=["employed_by"])],
+    )
+    g = fresh_graph("mt", schema=schema)
+    person = run(g.entities.create("Alice", "Person"))
+    company = run(g.entities.create("Acme", "Company"))
+    relation = run(g.relations.create(person.id, "employed_by", company.id))
+    run(g.maintenance.decay(now=_later(0), half_life_days=1e-9, dry_run=False))
+
+    by_alias = run(g.maintenance.prune(min_relevance=1.0, relation_types=["employed_by"]))
+    by_canonical = run(g.maintenance.prune(min_relevance=1.0, relation_types=["WORKS_AT"]))
+    assert by_alias.relation_ids == [relation.id]
+    assert by_canonical.relation_ids == [relation.id]
 
 
 def test_prune_types_ignore_case_and_match_schema_aliases():

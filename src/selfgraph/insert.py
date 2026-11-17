@@ -75,7 +75,7 @@ class Insert:
         _require_bool("replace_source", replace_source)
         if replace_source and source_id is None:
             raise ValidationError("replace_source needs a source_id: it replaces that source's earlier versions")
-        _require_json_mapping("metadata", metadata)
+        metadata = _require_json_mapping("metadata", metadata)
         event_time = parse_time(event_time, "event_time")
         if not text.strip():
             raise ValidationError("text cannot be empty or whitespace")
@@ -144,6 +144,8 @@ class Insert:
         @return (InsertResult): the inserted entities, relations, preferences, decisions, and merges.
         """
         _require_optional_text("source_id", source_id)
+        if facts is None:
+            raise ValidationError("invalid facts: expected object")
         return await self._c._apply_facts(
             as_input(Extraction, facts, "facts"),
             source_id=source_id,

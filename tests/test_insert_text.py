@@ -2,7 +2,7 @@ import logging
 import unicodedata
 
 import pytest
-from helpers import FakeLLM, extracting_llm, fresh_graph, new_graph, run
+from helpers import FakeLLM, extracting_llm, fresh_graph, new_graph, run, utc
 
 from selfgraph import (
     EntityInput,
@@ -21,8 +21,10 @@ from selfgraph.extraction.extractor import (
     LLMExtractor,
     _DecisionsOut,
     _DecOut,
+    _lenient_event_time,
     _PreferencesOut,
     _PrefOut,
+    _RelationsOut,
     _RelOut,
     _StepOut,
 )
@@ -144,6 +146,36 @@ def test_extracted_relation_with_an_invalid_endpoint_is_dropped_with_a_warning()
     assert [w.message for w in res.warnings if w.code == "extraction_partial_failure"] == [
         "dropped an extracted entity: entity name cannot contain control or surrogate characters"
     ]
+
+
+def test_regex_extraction_keeps_names_that_start_with_a_non_ascii_capital():
+    g = fresh_graph("regex-unicode", extraction="regex")
+    res = run(g.insert.text("Émile Zola met Łukasz Nowak in Århus. Иван Петров wrote to Σωκράτης."))
+    names = {e.name for e in res.entities}
+    assert {"Émile Zola", "Łukasz Nowak", "Århus", "Иван Петров", "Σωκράτης"} <= names
+    assert "Zola" not in names
+
+
+def test_llm_entity_ids_are_ignored_and_relation_endpoints_use_the_derived_ids():
+    entities = [{"id": "1", "type": "Person", "name": "Ann Lee"}, {"id": "2", "type": "Company", "name": "Acme Inc."}]
+    relations = _RelationsOut(relations=[_RelOut(from_name="Ann Lee", type="WORKS_AT", to_name="Acme Inc.")])
+    g = fresh_graph("llm-ids", llm=FakeLLM({"_EntitiesOut": {"entities": entities}, "_RelationsOut": relations}))
+    res = run(g.insert.text("Ann Lee works at Acme Inc.", source_id="llm-ids"))
+    assert {e.id for e in res.entities} == {"person:ann-lee", "company:acme"}
+    assert [(r.from_entity, r.type, r.to_entity) for r in res.relations] == [
+        ("person:ann-lee", "WORKS_AT", "company:acme")
+    ]
+
+
+def test_llm_entity_with_null_aliases_is_stored_without_aliases():
+    entities = [
+        {"type": "Person", "name": "Ann Lee", "aliases": None},
+        {"type": "Company", "name": "Acme", "aliases": ["Acme Corp"]},
+    ]
+    g = fresh_graph("llm-null-aliases", llm=FakeLLM({"_EntitiesOut": {"entities": entities}}))
+    res = run(g.insert.text("Ann Lee works at Acme.", source_id="llm-null-aliases"))
+    assert res.warnings == []
+    assert {e.id: e.aliases for e in res.entities} == {"person:ann-lee": [], "company:acme": ["Acme Corp"]}
 
 
 def test_custom_extractor_bypasses_the_llm_and_receives_the_insert_metadata():
@@ -298,6 +330,25 @@ def test_strict_text_insert_drops_off_schema_extractions_but_facts_insert_raises
     with pytest.raises(ValidationError, match="unknown type 'Team'"):
         run(g.insert.facts({"entities": [{"type": "Team", "name": "Core"}]}))
 
+    aged_schema = {
+        "entities": [
+            {"name": "Person", "properties": [{"name": "age", "type": "integer", "required": True}]},
+            {"name": "Company"},
+        ],
+        "relations": [{"type": "WORKS_AT", "from": {"types": ["Person"]}, "to": {"types": ["Company"]}}],
+    }
+    g_aged = fresh_graph("strict-text-merged", llm=FakeLLM(_full_responses()), schema=aged_schema, schema_mode="strict")
+    run(
+        g_aged.insert.facts(
+            {"entities": [{"type": "Person", "name": "Soham Gupta", "aliases": ["Soham"], "properties": {"age": 28}}]}
+        )
+    )
+    res_aged = run(g_aged.insert.text("Soham works at HydraDB. The team selected it.", source_id="m-aged"))
+    assert {e.id for e in res_aged.entities} == {"person:soham-gupta", "company:hydradb"}
+    assert [(r.from_entity, r.type) for r in res_aged.relations] == [("person:soham-gupta", "WORKS_AT")]
+    assert [m.survivor_id for m in res_aged.merges] == ["person:soham-gupta"]
+    assert run(g_aged.entities.get("person:soham-gupta")).properties == {"age": 28}
+
 
 def test_llm_relations_cite_their_chunk_and_progress_is_logged(caplog):
     text = " ".join(["Soham prefers HydraDB and works there every day."] * 400)
@@ -320,3 +371,35 @@ def test_llm_restatement_keeps_the_stored_decision_fields():
     run(g.decisions.update(dec.id, status="active", rationale="needs temporal history"))
     [again] = run(g.insert.text("The team picked HydraDB again.", source_id="m2")).decisions
     assert (again.id, again.status, again.rationale) == (dec.id, "active", "needs temporal history")
+
+
+def test_lenient_event_time_reads_a_bare_year_and_drops_what_it_cannot_parse():
+    assert _lenient_event_time("2021") == utc(2021)
+    assert _lenient_event_time(" 0001 ") == utc(1)
+    assert _lenient_event_time("2021-06-15T12:00:00Z") == utc(2021, 6, 15).replace(hour=12)
+    for noise in ("0000", "\u00b2\u00b2\u00b2\u00b2", "\uff12\uff10\uff12\uff11", "March 2021", "", None):
+        assert _lenient_event_time(noise) is None
+
+
+def test_llm_year_event_time_is_stored_and_an_unparseable_one_keeps_its_relation():
+    times = {"JOINED": "2021", "KNOWS": "March 2021", "MET": "\u00b2\u00b2\u00b2\u00b2"}
+
+    class YearLLM(FakeLLM):
+        async def generate(self, *, system, user, output):
+            name = output.__name__
+            if name == "_EntitiesOut":
+                return {"entities": [{"type": "Person", "name": "Ann"}, {"type": "Company", "name": "Acme"}]}
+            if name == "_RelationsOut":
+                return {
+                    "relations": [
+                        {"from_name": "Ann", "type": rtype, "to_name": "Acme", "event_time": event_time}
+                        for rtype, event_time in times.items()
+                    ]
+                }
+            return {name[1:-3].lower(): []}
+
+    g = fresh_graph("extract-year", llm=YearLLM(), resolver="exact")
+    res = run(g.insert.text("Ann joined Acme in 2021.", source_id="doc"))
+    assert res.warnings == []
+    assert {r.type: r.event_time for r in res.relations} == {"JOINED": utc(2021), "KNOWS": None, "MET": None}
+    assert run(g.retrieve("Ann Acme", as_of="2000-01-01")).subgraph.relations == []

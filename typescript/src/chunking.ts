@@ -17,6 +17,7 @@ export interface Encoder {
 
 const CHARS_PER_TOKEN = 4;
 const WS_CHAR = new RegExp(`^[${PY_WS_CLASS}]$`, "u");
+const REPLACED = /^(?:\ufffd|[\ud800-\udfff])$/;
 
 let encoder: Encoder | null | undefined;
 let loading: Promise<void> | null = null;
@@ -107,20 +108,55 @@ export function chunkText(text: string, options: { max_tokens?: number; overlap_
   if (!encoder) return chunkByChars(text, maxTokens * CHARS_PER_TOKEN, overlapTokens * CHARS_PER_TOKEN);
 
   const tokens = encode(encoder, text);
+  const cps = Array.from(text);
+  const bounds = charBounds(encoder, tokens, cps);
   const step = maxTokens - overlapTokens;
   const chunks: Chunk[] = [];
   let index = 0;
   const n = tokens.length;
   for (let i = 0; i < n; i += step) {
-    const piece = encoder.decode(tokens.slice(i, i + maxTokens));
-    const start = cpLen(encoder.decode(tokens.slice(0, i)));
+    const start = bounds[i] as number;
+    const end = bounds[Math.min(i + maxTokens, n)] as number;
+    const piece = cps.slice(start, end).join("");
     if (pyStrip(piece)) {
-      chunks.push({ index, text: piece, start_offset: start, end_offset: start + cpLen(piece) });
+      chunks.push({ index, text: piece, start_offset: start, end_offset: end });
       index++;
     }
     if (i + maxTokens >= n) break;
   }
   return chunks;
+}
+
+/**
+ * Map each token boundary to a code-point offset in the text, moving a boundary inside a character to its start.
+ *
+ * @param enc (Encoder): the tokenizer.
+ * @param tokens (number[]): the tokens of the text.
+ * @param cps (string[]): the text's code points.
+ * @return (number[]): tokens.length + 1 code-point offsets, the first 0 and the last cps.length.
+ */
+function charBounds(enc: Encoder, tokens: number[], cps: string[]): number[] {
+  const bounds = [0];
+  let run = 0;
+  let offset = 0;
+  for (let end = 1; end <= tokens.length; end++) {
+    const piece = enc.decode(tokens.slice(run, end));
+    const length = cpLen(piece);
+    if (end < tokens.length && piece.endsWith("\ufffd")) {
+      const source = cps[offset + length - 1] ?? "";
+      if (!REPLACED.test(source)) continue;
+      const next = tokens[end] as number;
+      if (enc.decode(tokens.slice(run, end + 1)) !== piece + enc.decode([next])) continue;
+    }
+    for (let cut = run + 1; cut < end; cut++) {
+      bounds.push(offset + Math.max(0, cpLen(enc.decode(tokens.slice(run, cut))) - 1));
+    }
+    offset += length;
+    bounds.push(offset);
+    run = end;
+  }
+  bounds[bounds.length - 1] = cps.length;
+  return bounds;
 }
 
 /**

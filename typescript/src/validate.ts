@@ -311,13 +311,16 @@ export function parseTime(value: unknown, field: string): Date | null {
     requireDatetime(field, value);
     return (value as Date | undefined) ?? null;
   }
+  let parsed: Date;
   try {
-    return parseIso(value);
+    parsed = parseIso(value);
   } catch {
     throw new ValidationError(
       `invalid ${field}: ${pyRepr(value)} is not an ISO 8601 date or time (e.g. 2024-01-02T03:04:05Z)`,
     );
   }
+  requireDatetime(field, parsed);
+  return parsed;
 }
 
 /**

@@ -1,7 +1,8 @@
 import pytest
 from helpers import create_entities, fresh_graph, new_graph, run, skip_on_generic
 
-from selfgraph import ConflictError, NotFoundError, ValidationError
+from selfgraph import ConflictError, NotFoundError, ValidationError, ids
+from selfgraph._serde import L_ENTITY, L_STEP, L_TRACE
 
 
 def seed(g):
@@ -105,6 +106,50 @@ def test_delete_trace_keeps_relations():
     assert run(g.relations.get(r1.id)) is not None
 
 
+def trace_links(g, tid):
+    made = run(g.store.match_edges(g.namespace, from_label=L_ENTITY, to_label=L_TRACE, to_in=[tid]))
+    out = run(g.store.match_edges(g.namespace, from_label=L_TRACE, to_label=L_ENTITY, from_in=[tid]))
+    ends = run(g.store.match_edges(g.namespace, from_label=L_STEP, to_label=L_ENTITY, from_in=[ids.step_id(tid, 0)]))
+    return sorted((e["type"], e["from_id"], e["to_id"]) for e in made + out + ends)
+
+
+@pytest.mark.parametrize(
+    ("with_step", "lost", "extra"),
+    [
+        (False, [(L_TRACE, "MADE_DECISION"), (L_TRACE, "RESULTED_IN"), (L_TRACE, "CONSIDERED")], []),
+        (True, [(L_STEP, "FROM"), (L_STEP, "TO")], [("CONSIDERED", "company:beta"), ("CONSIDERED", "person:ann")]),
+    ],
+)
+def test_reinserting_a_decision_repairs_links_a_partial_write_left_wrong(with_step, lost, extra):
+    g = fresh_graph("relink")
+    create_entities(g, "Person:Ann", "Company:Acme", "Company:Beta", "Team:X", "Team:Y")
+    rel = run(g.relations.create("team:x", "SELECTED", "team:y"))
+    decision = {
+        "id": "decision:pick",
+        "title": "Pick a vendor",
+        "steps": [rel.id] if with_step else [],
+        "actor_entity": "person:ann",
+        "outcome_entity": "company:acme",
+        "alternative_entities": ["company:beta"],
+    }
+    run(g.insert.facts({"decisions": [decision]}))
+    whole = trace_links(g, "decision:pick")
+    assert len(whole) == (5 if with_step else 3)
+    for label, rtype in lost:
+        node = ids.step_id("decision:pick", 0) if label == L_STEP else "decision:pick"
+        run(g.store.delete_edges_touching_by_type(g.namespace, label, node, rtype))
+    if extra:
+        rows = [(rtype, "decision:pick", to, {"ns": g.namespace}) for rtype, to in extra]
+        run(g.store.create_edges(g.namespace, L_TRACE, L_ENTITY, rows))
+    assert trace_links(g, "decision:pick") != whole
+    run(g.insert.facts({"decisions": [decision]}))
+    assert trace_links(g, "decision:pick") == whole
+    repaired = run(g.decisions.get("decision:pick")).updated_at
+    run(g.insert.facts({"decisions": [decision]}))
+    assert trace_links(g, "decision:pick") == whole
+    assert run(g.decisions.get("decision:pick")).updated_at == repaired
+
+
 def test_decision_steps_default_to_empty():
     g = fresh_graph("nosteps")
     run(g.insert.facts({"decisions": [{"title": "No steps", "id": "decision:none"}]}))
@@ -185,3 +230,57 @@ def test_insert_restating_a_decision_keeps_what_it_leaves_out():
     [dated] = run(g.insert.facts({"decisions": [title]}, event_time="2025-01-01T00:00:00Z")).decisions
     assert dated.event_time.isoformat() == "2025-01-01T00:00:00+00:00"
     assert run(g.insert.facts({"decisions": [{"title": "Fresh"}]})).decisions[0].status == "completed"
+
+
+@pytest.mark.parametrize("step_first", [False, True])
+def test_decision_ids_cannot_overwrite_steps_in_either_creation_order(step_first):
+    g = new_graph()
+    rel, _ = seed(g)
+
+    def with_step():
+        return run(g.decisions.create("With a step", id="decision:first", steps=[rel.id]))
+
+    def with_old_step_id():
+        return run(g.decisions.create("Independent decision", id="decision:first:step:0"))
+
+    if step_first:
+        with_step()
+        with_old_step_id()
+    else:
+        with_old_step_id()
+        with_step()
+    assert run(g.decisions.get("decision:first:step:0")).title == "Independent decision"
+    assert [s.relation_id for s in run(g.decisions.get("decision:first")).steps] == [rel.id]
+    run(g.decisions.delete("decision:first:step:0"))
+    assert [s.relation_id for s in run(g.decisions.get("decision:first")).steps] == [rel.id]
+    assert run(g.relations.delete(rel.id)).deleted_decisions == 1
+    assert run(g.decisions.get("decision:first")) is None
+
+
+@pytest.mark.parametrize("step_first", [False, True])
+def test_internal_step_prefix_is_reserved_in_either_creation_order(step_first):
+    g = new_graph()
+    rel, _ = seed(g)
+
+    def with_step():
+        run(g.decisions.create("With a step", id="decision:first", steps=[rel.id]))
+
+    if step_first:
+        with_step()
+    with pytest.raises(ValidationError, match="reserved"):
+        run(g.entities.create("Intruder", "Thing", id="decisionstep:decision:first:step:0"))
+    with pytest.raises(ValidationError, match="must start"):
+        run(g.decisions.create("Intruder", id="decisionstep:decision:first:step:0"))
+    if not step_first:
+        with_step()
+    assert [s.relation_id for s in run(g.decisions.get("decision:first")).steps] == [rel.id]
+
+
+def test_step_ids_round_trip():
+    from selfgraph import ids
+
+    for tid in ("decision:first", "decision:first:step:0", "decision:日本語"):
+        for order in (0, 1, 99):
+            sid = ids.step_id(tid, order)
+            assert sid == f"decisionstep:{tid}:step:{order}"
+            assert ids.trace_of_step(sid) == tid

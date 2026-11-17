@@ -139,17 +139,18 @@ def grounded_terms(
 
 
 def expand_tokens(tokens: set[str], schema: Schema | None, tokenize: Tokenize) -> set[str]:
-    """Add the words of each entity type a question names by alias or synonym, so seeding finds entities of that type.
+    """Add the words of each entity type and its subtypes when a question names the type or a definition.
 
-    A definition adds the words of the entity type it belongs to.
+    A definition adds the words of the entity type it belongs to and that type's subtypes.
 
     @param tokens (set[str]): the question's content tokens.
     @param schema (Schema | None): the schema, or None for no expansion.
     @param tokenize (Tokenize): splits text into content tokens.
-    @return (set[str]): the tokens with the matched type names added.
+    @return (set[str]): the tokens with the matched type and subtype names added.
     """
     if schema is None:
         return tokens
+    index = _entity_index(schema)
     owner = {d.name: e.name for e in schema.entities for d in e.definitions}
     stems = {stem(t) for t in tokens}
     out = set(tokens)
@@ -158,5 +159,8 @@ def expand_tokens(tokens: set[str], schema: Schema | None, tokenize: Tokenize) -
         for form, (term, _) in forms[kind].items():
             words = {stem(t) for t in tokenize(form)}
             if words and words <= stems:
-                out |= tokenize(named(term))
+                root = named(term)
+                for entity in schema.entities:
+                    if any(t.name == root for t in _lineage(entity, index)):
+                        out |= tokenize(entity.name)
     return out

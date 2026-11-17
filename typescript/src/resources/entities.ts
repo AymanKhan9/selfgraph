@@ -145,6 +145,6 @@ export class Entities extends Resource {
    * @return (DeleteResult): counts of what was removed.
    */
   async delete(id: string): Promise<DeleteResult> {
-    return this.graph.write((tx, ns) => ops.deleteEntity(tx, ns, id));
+    return this.graph.write((tx, ns) => ops.deleteEntity(tx, ns, id, this.graph.caps()));
   }
 }

@@ -353,6 +353,8 @@ async def _scan_seeds(
 
     best: list[tuple[Entity, float]] = []
     async for page in scored():
+        if as_of is not None and as_of.known is not None:
+            page = await _ops.with_known_sources(graph.store, ns, page, as_of.known)
         best = heapq.nsmallest(k, [*best, *_seed_scores(page, query_tokens, exact, stats)], key=_seed_rank)
     return best
 
@@ -489,7 +491,11 @@ async def _traverse(
             other = rel.to_entity if rel.from_entity == node else rel.from_entity
             if dist.get(other, depth + 1) > d + 1:
                 frontier.append((other, d + 1))
-    hubs = {n for n in dist if len(adjacency.get(n, ())) >= HUB_DEGREE}
+    missing = [n for n in dist if n not in adjacency]
+    adjacency.update(await _neighbors(graph, ns, missing, as_of))
+    for node in dist:
+        relations.update((rel.id, rel) for rel in adjacency[node])
+    hubs = {n for n in dist if len(adjacency[n]) >= HUB_DEGREE}
     return dist, _within(relations.values(), dist), hubs
 
 
@@ -608,7 +614,8 @@ async def _neighbors(
             for rel in out:
                 outgoing[rel.from_entity].append(rel)
             for rel in inc:
-                incoming[rel.to_entity].append(rel)
+                if rel.from_entity != rel.to_entity:
+                    incoming[rel.to_entity].append(rel)
     return {n: outgoing[n] + incoming[n] for n in nodes}
 
 
@@ -815,6 +822,31 @@ async def _collect_preferences(
     return sorted((p for p in preferences if p.subject_entity in order), key=lambda p: order[p.subject_entity])
 
 
+def _context_payload(text: str, *, source: bool = False) -> str:
+    """Contain stored content before admitting it to the context's SDK-owned headers.
+
+    @param text (str): a source passage or assembled graph record, never its trust header.
+    @param source (bool): preserve passage lines and label each as source data.
+    @return (str): display-safe content with no unlabelled physical lines.
+    """
+    rows = re.split(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]", text)
+    rendered = []
+    for row in rows:
+        rendered.append(
+            "".join(
+                f"\\u{ord(c):04x}"
+                if (ord(c) < 32 and c != "\t")
+                or 127 <= ord(c) <= 159
+                or ord(c) in (0x061C, 0x200E, 0x200F)
+                or 0x202A <= ord(c) <= 0x202E
+                or 0x2066 <= ord(c) <= 0x2069
+                else c
+                for c in row
+            )
+        )
+    return "\n".join("SOURCE | " + row for row in rendered) if source else "\\n".join(rendered)
+
+
 def _assemble(
     passages,
     entities,
@@ -835,9 +867,12 @@ def _assemble(
     @param decisions (list[DecisionTrace]): the collected decision traces.
     @param names (dict[str, str]): display name for every entity id the context mentions.
     @param dist (dict[str, int]): each entity's closeness rank to the query, lower first (hops, or PageRank rank).
-    @param budget_tokens (int): the maximum estimated tokens to emit; the first line that does not fit ends the
-        context, so a farther line never takes the place of a nearer one, and when even the first line does not fit,
-        that line is cut to the budget, so a non-empty subgraph never yields an empty context.
+    @param budget_tokens (int): the maximum estimated tokens to emit. Records are counted separately; the
+        cached change when the preceding record gains a newline is charged only when a following record fits.
+        The counter's empty-string cost (one for the length estimate, zero for cl100k) covers fallback rounding.
+        The first line that does not fit ends the context, so a farther line never takes the place of a nearer
+        one, and when even the first line does not fit, that line is cut to the budget, so a non-empty subgraph
+        never yields an empty context.
     @param hubs (Collection[str]): hub entity ids; a relation line through one is marked "(via hub)".
     @return (str): the assembled context text. Certified relations come first among equally close ones and are
         marked "[certified]".
@@ -845,25 +880,34 @@ def _assemble(
     lines: list[str] = []
     first: list[str] = []
     used = 0
+    rounding = 0
+    boundary = 0
     full = False
 
-    def add(line: str, cap: int) -> bool:
-        nonlocal used, full
+    def add(payload: str, cap: int, header: str = "GRAPH") -> bool:
+        nonlocal used, full, rounding, boundary
+        line = (
+            _context_payload(payload, source=True) if header == "SOURCE" else f"{header} | {_context_payload(payload)}"
+        )
         if not first:
             first.append(line)
+            rounding = count_tokens("")
         if full:
             return False
-        cost = count_tokens(line)
+        plain = count_tokens(line)
+        cost = plain + boundary
         if used + cost > cap:
             full = cap >= budget_tokens
             return False
         lines.append(line)
         used += cost
+        delta = count_tokens(line + "\n") - plain
+        boundary = max(rounding, delta) if rounding else delta
         return True
 
     passage_cap = budget_tokens * _PASSAGE_BUDGET_PERCENT // 100
     for p in passages:
-        if not add(p, passage_cap):
+        if not add(p, passage_cap, "SOURCE"):
             break
 
     far = len(dist) + 1
@@ -878,11 +922,12 @@ def _assemble(
         props = _format_props(r.properties)
         if props:
             line += f" {props}"
+        header = "GRAPH"
         if r.certified_at is not None:
-            line += " [certified]"
+            header += " [certified]"
         if r.from_entity in hubs or r.to_entity in hubs:
-            line += " (via hub)"
-        if not add(line, budget_tokens):
+            header += " (via hub)"
+        if not add(line, budget_tokens, header):
             break
 
     for p in sorted(preferences, key=lambda p: dist.get(p.subject_entity, far)):
@@ -1011,18 +1056,39 @@ async def retrieve(
 
     await _load(graph, ns, known, dist)
     entities = [known[eid] for eid in dist if eid in known]
+    if as_of is not None and as_of.known is not None:
+        entities = await _ops.with_known_sources(graph.store, ns, entities, as_of.known)
 
     decisions = await _collect_decisions(graph, ns, {r.id for r in relations}, as_of)
     preferences = await _collect_preferences(graph, ns, dist, valid)
     if as_of is not None and decisions:
-        refs = {r for d in decisions for r in (d.actor_entity, d.outcome_entity, *d.alternative_entities) if r}
+        refs = {
+            r
+            for d in decisions
+            for r in (
+                d.actor_entity,
+                d.outcome_entity,
+                *d.alternative_entities,
+                *(eid for step in d.steps for eid in (step.from_entity, step.to_entity)),
+            )
+            if r
+        }
         await _load(graph, ns, known, sorted(refs))
         found = [known[eid] for eid in sorted(refs) if eid in known]
         visible = await _visible_at(graph, ns, found, as_of, valid)
         decisions = [
             d
             for d in decisions
-            if all(r in visible for r in (d.actor_entity, d.outcome_entity, *d.alternative_entities) if r)
+            if all(
+                r in visible
+                for r in (
+                    d.actor_entity,
+                    d.outcome_entity,
+                    *d.alternative_entities,
+                    *(eid for step in d.steps for eid in (step.from_entity, step.to_entity)),
+                )
+                if r
+            )
         ]
     passages = await _collect_passages(graph, ns, entities, dist, query_tokens, as_of)
     names = {e.id: e.name for e in entities}
@@ -1214,7 +1280,7 @@ def answerability(
     for r in relations:
         adjacency.setdefault(r.from_entity, set()).add(r.to_entity)
         adjacency.setdefault(r.to_entity, set()).add(r.from_entity)
-        for eid in (r.from_entity, r.to_entity):
+        for eid in {r.from_entity, r.to_entity}:
             degree[eid] = degree.get(eid, 0) + 1
     hubs = {eid for eid, n in degree.items() if n >= HUB_DEGREE}
     pairs = [(a, b) for i, a in enumerate(linked) for b in list(linked)[i + 1 :]]

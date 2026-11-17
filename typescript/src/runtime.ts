@@ -3,7 +3,15 @@ import { homedir } from "node:os";
 import { join, sep } from "node:path";
 
 import type { SelfGraph } from "./client.js";
-import { NotFoundError, STORE_KUZU_HINT, StoreError, settingHint, surfaceHint, ValidationError } from "./errors.js";
+import {
+  LLM_HINT,
+  NotFoundError,
+  STORE_KUZU_HINT,
+  StoreError,
+  settingHint,
+  surfaceHint,
+  ValidationError,
+} from "./errors.js";
 import { checkPrompts } from "./extraction/prompts.js";
 import { casefold } from "./internal/casefold.js";
 import { log } from "./internal/log.js";
@@ -40,7 +48,7 @@ import { CypherStore, Neo4jStore } from "./stores/cypher.js";
 import { FalkorDBStore } from "./stores/falkordb.js";
 import { HydraDBStore } from "./stores/hydradb.js";
 import { KuzuStore } from "./stores/kuzu.js";
-import { requireLevel } from "./tiers.js";
+import { clamp, type Level, PRESETS, requireLevel } from "./tiers.js";
 import { checkOptions, requireNamespace } from "./validate.js";
 
 export { version } from "../package.json";
@@ -612,6 +620,18 @@ export function checkSettings(settings: GraphSettings): GraphSettings {
   llmConcurrency(settings.llm_concurrency);
   const llm = buildLlm(settings);
   if (llm !== null) checkLlmConfig(llm);
+  const level = (settings.level || "balanced") as Level;
+  const cap = (settings.max_tier || "max") as Level;
+  if (llm === null && level === "max" && cap === "max") {
+    throw new ValidationError(`level 'max' needs an LLM: ${LLM_HINT}`);
+  }
+  const preset = PRESETS[level];
+  if (llm === null && clamp("resolution", settings.resolver || preset.resolution, cap) === "llm") {
+    throw new ValidationError(`resolver 'llm' needs an LLM: ${LLM_HINT}`);
+  }
+  if (llm === null && clamp("contradiction", settings.contradiction || preset.contradiction, cap) === "llm") {
+    throw new ValidationError(`contradiction 'llm' needs an LLM: ${LLM_HINT}`);
+  }
   const schema = asSchema(jsonSetting<Schema | ParsedSchema>(settings.schema, "schema"));
   requireSchemaForMode(settings.schema_mode, schema);
   const instructions = asInput(

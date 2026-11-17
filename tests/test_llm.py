@@ -1,15 +1,16 @@
 import asyncio
+import errno
 import re
 
 import pytest
 from helpers import run
 
-from selfgraph import EntityInput, LLMConfig, ValidationError
+from selfgraph import LLMConfig, ValidationError
 from selfgraph._ops import _require_text
 from selfgraph.errors import error_reason, surface_hint
 from selfgraph.extraction import chunking
-from selfgraph.extraction.chunking import _chunk_by_chars, chunk_text
-from selfgraph.extraction.extractor import LLMExtractor, _EntitiesOut
+from selfgraph.extraction.chunking import _chunk_by_chars, chunk_text, count_tokens
+from selfgraph.extraction.extractor import LLMExtractor, _EntitiesOut, _EntityOut
 from selfgraph.llm.base import _fatal, _require_provider, _sends_temperature, resolve_llm, summarize_error
 from selfgraph.models import ParsedDocument
 from selfgraph.runtime import GraphSettings, _build_llm
@@ -168,10 +169,37 @@ def test_a_tiktoken_that_cannot_load_its_encoding_warns_once_and_falls_back(monk
     assert "Failed to resolve 'openaipublic.blob.core.windows.net'" in warnings[0]
 
 
+def test_token_chunks_are_exact_slices_when_a_token_splits_a_character():
+    text = "भारत एक विशाल देश है। 東京は日本の首都です。 Launch 🚀🎉 day, 👩‍💻 café. " * 12
+    for max_tokens, overlap in ((50, 10), (7, 0), (1, 0)):
+        chunks = chunk_text(text, max_tokens=max_tokens, overlap_tokens=overlap)
+        assert chunks
+        for chunk in chunks:
+            assert chunk.text == text[chunk.start_offset : chunk.end_offset]
+            assert "�" not in chunk.text
+        assert chunks[0].start_offset == 0
+        assert chunks[-1].end_offset >= len(text.rstrip())
+        for a, b in zip(chunks, chunks[1:], strict=False):
+            assert not text[a.end_offset : b.start_offset].strip()
+
+
+def test_token_chunks_end_on_the_token_edge_after_a_literal_replacement_character():
+    pytest.importorskip("tiktoken")
+    chunks = chunk_text(" \ufffd" * 50, max_tokens=4, overlap_tokens=1)
+    assert [c.start_offset for c in chunks] == list(range(0, 97, 6))
+    assert [c.text for c in chunks] == [" \ufffd" * 4] * 16 + [" \ufffd" * 2]
+
+
+def test_token_chunking_and_counting_read_special_tokens_as_text():
+    text = "Models end a sample with <|endoftext|> and fill code with <|fim_prefix|>."
+    assert count_tokens(text) > 0
+    assert "".join(chunk.text for chunk in chunk_text(text, max_tokens=4, overlap_tokens=0)) == text
+
+
 def test_error_reasons_fill_empty_messages_and_strip_driver_boilerplate():
     try:
         try:
-            raise ConnectionRefusedError(111, "Connection refused")
+            raise ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")
         except OSError as inner:
             raise RuntimeError("Cannot connect to API: ") from inner
     except RuntimeError as exc:
@@ -229,7 +257,7 @@ def test_chunks_extract_concurrently_up_to_the_setting_and_merge_in_order():
             self.active -= 1
             if output is _EntitiesOut:
                 await asyncio.sleep(0.03 if "Chunk0" in user else 0)
-                return _EntitiesOut(entities=[EntityInput(type="Word", name=re.search(r"Chunk\d+", user).group(0))])
+                return _EntitiesOut(entities=[_EntityOut(type="Word", name=re.search(r"Chunk\d+", user).group(0))])
             return output()
 
     text = " ".join(f"Chunk{i} filler words here. " * 300 for i in range(6))

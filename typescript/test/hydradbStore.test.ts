@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { type GraphStore, HydraDBStore, StoreError } from "../src/index.js";
+import { type GraphStore, HydraDBStore, SelfGraph, StoreError } from "../src/index.js";
 import { forEachStore, type StoreSpec, uniqueNs } from "./helpers.js";
 
 const props = (ns: string, id: string) => ({ id, ns, name: id });
@@ -59,6 +59,49 @@ function suite(spec: StoreSpec) {
       expect(await store.getNode(ns, "Evidence", "x:e")).toBeNull();
     } finally {
       await store.close?.();
+    }
+  });
+
+  it.runIf(spec.name === "hydradb")("applies extra_label to the node", async () => {
+    const store: GraphStore = spec.make();
+    const ns = uniqueNs("queue");
+    try {
+      await store.transaction(async (tx) => {
+        await tx.upsertNode(ns, "Source", "x:a", props(ns, "x:a"), { extra_label: "CustomLabel" });
+      });
+      const byPrimary = await store.getNode(ns, "Source", "x:a");
+      const byExtra = await store.getNode(ns, "CustomLabel", "x:a");
+      expect(byPrimary).not.toBeNull();
+      expect(byExtra).not.toBeNull();
+      expect(byExtra?.id).toBe("x:a");
+    } finally {
+      await store.close?.();
+    }
+  });
+
+  it.runIf(spec.name === "hydradb")("writes entity types that are not HydraDB labels", async () => {
+    const ns = uniqueNs("labels");
+    const graph = new SelfGraph(spec.make(), { namespace: ns });
+    try {
+      await graph.initialize();
+      for (const [name, type] of [
+        ["Acme", "Big Co"],
+        ["Delhi", "शहर"],
+        ["Ada", "Person"],
+        ["Bot", "Big-Co.v2"],
+      ] as const) {
+        await graph.entities.create(name, type);
+      }
+      const types = Object.fromEntries((await graph.entities.list()).items.map((e) => [e.id, e.type]));
+      expect(types).toEqual({
+        "big-co:acme": "Big Co",
+        "शहर:delhi": "शहर",
+        "person:ada": "Person",
+        "big-co.v2:bot": "Big-Co.v2",
+      });
+      expect(await graph.store.getNode(ns, "Person", "person:ada")).not.toBeNull();
+    } finally {
+      await graph.close();
     }
   });
 }
